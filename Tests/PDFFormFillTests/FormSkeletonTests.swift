@@ -8,7 +8,7 @@ struct FormSkeletonTests {
 
     /// Word puts the labels of one form row on one text line separated by
     /// spaces; the expected glyph positions come from CoreText, not PDFKit.
-    static let dateRow = "年      月      日"
+    static let labelRow = "甲      乙      丙"
 
     static func glyphOffsets(_ text: String, font: String, size: CGFloat) -> [CGFloat] {
         let ctFont = CTFontCreateWithName(font as CFString, size, nil)
@@ -24,9 +24,9 @@ struct FormSkeletonTests {
     }
 
     static func blankForm() throws -> URL {
-        try SyntheticPDF.make(size: SyntheticPDF.pdfMakerA4, [
-            .text("填表日期", at: CGPoint(x: 300, y: 114.5), size: 10, font: "PingFang TC"),
-            .text(dateRow, at: CGPoint(x: 207, y: 227.5), size: 12, font: "PingFang TC"),
+        try SyntheticPDF.make(size: SyntheticPDF.nearA4, [
+            .text("標題文字", at: CGPoint(x: 300, y: 114.5), size: 10, font: "PingFang TC"),
+            .text(labelRow, at: CGPoint(x: 150, y: 300), size: 12, font: "PingFang TC"),
             .line(from: CGPoint(x: 96, y: 120), to: CGPoint(x: 489, y: 120), width: 1),
         ])
     }
@@ -34,14 +34,14 @@ struct FormSkeletonTests {
     @Test("labels are found at the positions they were drawn")
     func labelPositions() throws {
         let labels = try FormSkeleton.labels(in: Self.blankForm())
-        let offsets = Self.glyphOffsets(Self.dateRow, font: "PingFang TC", size: 12)
-        // Glyph indices of 年, 月, 日 in the row (spaces in between).
-        let characters = Array(Self.dateRow)
+        let offsets = Self.glyphOffsets(Self.labelRow, font: "PingFang TC", size: 12)
+        // Glyph indices of 甲, 乙, 丙 in the row (spaces in between).
+        let characters = Array(Self.labelRow)
         let expected: [(String, CGFloat, CGFloat)] = [
-            ("填表日期", 300, 114.5),
-            ("年", 207 + offsets[characters.firstIndex(of: "年")!], 227.5),
-            ("月", 207 + offsets[characters.firstIndex(of: "月")!], 227.5),
-            ("日", 207 + offsets[characters.firstIndex(of: "日")!], 227.5),
+            ("標題文字", 300, 114.5),
+            ("甲", 150 + offsets[characters.firstIndex(of: "甲")!], 300),
+            ("乙", 150 + offsets[characters.firstIndex(of: "乙")!], 300),
+            ("丙", 150 + offsets[characters.firstIndex(of: "丙")!], 300),
         ]
         #expect(labels.map(\.text) == expected.map(\.0))
         for (label, (text, x, baseline)) in zip(labels, expected) {
@@ -55,8 +55,8 @@ struct FormSkeletonTests {
         let skeleton = try FormSkeleton.generate(blankForm: Self.blankForm(), reference: "blank.pdf")
         let placements = skeleton.split(separator: "\n").filter { $0.hasPrefix("% \\at{") }
         #expect(placements.count == 4)
-        let year = try #require(placements.first { $0.hasSuffix("% 年 (207.0, 227.5)") })
-        #expect(year.contains("{227.5}"))
+        let first = try #require(placements.first { $0.hasSuffix("% 甲 (150.0, 300.0)") })
+        #expect(first.contains("{300.0}"))
         #expect(skeleton.contains("\\newcommand{\\BlankForm}{blank.pdf}"))
         #expect(skeleton.contains("\\usepackage[a4paper,margin=0pt]{geometry}"))
         #expect(skeleton.contains("\\newcommand{\\at}[3]"))

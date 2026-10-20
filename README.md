@@ -37,7 +37,7 @@ can be inspected.
 ## Page size
 
 - `.a4` (default): a near-A4 original (within 1.5 bp, for example the
-  595.32 × 842.04 bp produced by Word through Acrobat PDFMaker) becomes exact
+  595.32 × 841.92 bp that Acrobat PDFMaker produces for A4) becomes exact
   A4 (210 × 297 mm) by keeping its top-left corner. Nothing is scaled; if the
   strip that would be removed contains ink, stamping is refused.
 - `.original`: the original page size is kept.

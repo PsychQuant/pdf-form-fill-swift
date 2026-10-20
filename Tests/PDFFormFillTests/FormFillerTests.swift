@@ -9,7 +9,7 @@ struct FormFillerTests {
     /// Writes the spec's near-A4 form as blank.pdf and an overlay .tex next to it.
     static func project(typed: String, blankFormLine: String = "\\newcommand{\\BlankForm}{blank.pdf}") throws -> URL {
         let dir = try OverlayCompilerTests.workspace()
-        try SyntheticPDF.write([SyntheticPDF.Page(size: SyntheticPDF.pdfMakerA4, items: FormStamperTests.formItems)],
+        try SyntheticPDF.write([SyntheticPDF.Page(size: SyntheticPDF.nearA4, items: FormStamperTests.formItems)],
                                to: dir.appendingPathComponent("blank.pdf"))
         return try OverlayCompilerTests.write("""
         \\documentclass{article}
@@ -30,7 +30,7 @@ struct FormFillerTests {
 
     @Test("a clean fill passes every check and is exact A4", .enabled(if: xelatexAvailable, "xelatex not found"))
     func cleanFill() throws {
-        let tex = try Self.project(typed: "\\at{180}{237.5}{12}{115};")
+        let tex = try Self.project(typed: "\\at{123}{310}{12}{42};")
         let output = tex.deletingPathExtension().appendingPathExtension("pdf")
         let result = try FormFiller.fill(tex: tex, output: output)
         #expect(result.passed)
@@ -44,8 +44,8 @@ struct FormFillerTests {
 
     @Test("text placed over a printed label fails the fill and is located", .enabled(if: xelatexAvailable, "xelatex not found"))
     func collision() throws {
-        // Same baseline as 年 (207, 227.5), starting 2 bp to its left.
-        let tex = try Self.project(typed: "\\at{205}{227.5}{12}{115};")
+        // Same baseline as 甲 (150, 300), starting 2 bp to its left.
+        let tex = try Self.project(typed: "\\at{148}{300}{12}{42};")
         let output = tex.deletingPathExtension().appendingPathExtension("pdf")
         let result = try FormFiller.fill(tex: tex, output: output)
         #expect(!result.passed)
@@ -53,13 +53,13 @@ struct FormFillerTests {
         let overlap = result.report.result(for: .overlayInkOnOriginalInk)
         #expect(overlap.count > 0)
         let band = try #require(overlap.bands.first)
-        #expect(band.left >= 205 && band.right <= 220)
-        #expect(band.top >= 214 && band.bottom <= 230)
+        #expect(band.left >= 148 && band.right <= 163)
+        #expect(band.top >= 286 && band.bottom <= 303)
     }
 
     @Test("diff artifacts are written when a directory is given", .enabled(if: xelatexAvailable, "xelatex not found"))
     func artifacts() throws {
-        let tex = try Self.project(typed: "\\at{180}{237.5}{12}{115};")
+        let tex = try Self.project(typed: "\\at{123}{310}{12}{42};")
         let diffDirectory = tex.deletingLastPathComponent().appendingPathComponent("diff")
         _ = try FormFiller.fill(tex: tex, output: tex.deletingPathExtension().appendingPathExtension("pdf"),
                                 diffDirectory: diffDirectory)

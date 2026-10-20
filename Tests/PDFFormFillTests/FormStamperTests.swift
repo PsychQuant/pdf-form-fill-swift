@@ -6,10 +6,10 @@ import Testing
 
 struct FormStamperTests {
 
-    // The spec example: a near-A4 blank form with one line and the label 年.
+    // The spec example: a near-A4 blank form with one line and the label 甲.
     static let formItems: [SyntheticPDF.Item] = [
         .line(from: CGPoint(x: 100, y: 100), to: CGPoint(x: 300, y: 100), width: 1),
-        .text("年", at: CGPoint(x: 207, y: 227.5), size: 12, font: "PingFang TC"),
+        .text("甲", at: CGPoint(x: 150, y: 300), size: 12, font: "PingFang TC"),
     ]
 
     static func output() -> URL {
@@ -25,9 +25,9 @@ struct FormStamperTests {
 
     @Test("a near-A4 form becomes exact A4 without moving the form")
     func nearA4ToA4() throws {
-        let original = try SyntheticPDF.make(size: SyntheticPDF.pdfMakerA4, Self.formItems)
+        let original = try SyntheticPDF.make(size: SyntheticPDF.nearA4, Self.formItems)
         let overlay = try SyntheticPDF.make(size: SyntheticPDF.a4, [
-            .text("115", at: CGPoint(x: 180, y: 237.5), size: 12, font: "Helvetica"),
+            .text("42", at: CGPoint(x: 123, y: 310), size: 12, font: "Helvetica"),
         ])
         let output = Self.output()
         try FormStamper.stamp(original: original, overlay: overlay, pageMode: .a4, output: output)
@@ -44,21 +44,21 @@ struct FormStamperTests {
 
     @Test("page mode original keeps the original size")
     func keepOriginalSize() throws {
-        let original = try SyntheticPDF.make(size: SyntheticPDF.pdfMakerA4, Self.formItems)
+        let original = try SyntheticPDF.make(size: SyntheticPDF.nearA4, Self.formItems)
         let overlay = try SyntheticPDF.make(size: SyntheticPDF.a4, [
-            .text("115", at: CGPoint(x: 180, y: 237.5), size: 12, font: "Helvetica"),
+            .text("42", at: CGPoint(x: 123, y: 310), size: 12, font: "Helvetica"),
         ])
         let output = Self.output()
         try FormStamper.stamp(original: original, overlay: overlay, pageMode: .original, output: output)
         let size = try PageRaster.page(url: output, index: 0).getBoxRect(.cropBox).size
-        #expect(abs(size.width - 595.32) < 0.01)
-        #expect(abs(size.height - 842.04) < 0.01)
+        #expect(abs(size.width - 596) < 0.01)
+        #expect(abs(size.height - 843) < 0.01)
         #expect(try Self.verify(original: original, output: output, overlay: overlay).passed)
     }
 
     @Test("a TeX-compiled overlay stamps with zero difference outside it", .enabled(if: xelatexAvailable, "xelatex not found"))
     func texOverlay() throws {
-        let original = try SyntheticPDF.make(size: SyntheticPDF.pdfMakerA4, Self.formItems)
+        let original = try SyntheticPDF.make(size: SyntheticPDF.nearA4, Self.formItems)
         let dir = try OverlayCompilerTests.workspace()
         let tex = try OverlayCompilerTests.write("""
         \\documentclass{article}
@@ -70,7 +70,7 @@ struct FormStamperTests {
         \\begin{document}
         \\null
         \\begin{tikzpicture}[remember picture,overlay]
-        \\at{180}{237.5}{12}{115};
+        \\at{123}{310}{12}{42};
         \\end{tikzpicture}
         \\end{document}
         """, in: dir)
@@ -86,7 +86,7 @@ struct FormStamperTests {
 
     @Test("the original file is never modified")
     func originalUntouched() throws {
-        let original = try SyntheticPDF.make(size: SyntheticPDF.pdfMakerA4, Self.formItems)
+        let original = try SyntheticPDF.make(size: SyntheticPDF.nearA4, Self.formItems)
         let before = try Data(contentsOf: original)
         let overlay = try SyntheticPDF.make(size: SyntheticPDF.a4, [])
         try FormStamper.stamp(original: original, overlay: overlay, pageMode: .a4, output: Self.output())
@@ -116,7 +116,7 @@ struct FormStamperTests {
 
     @Test("A4 mode refuses to crop ink of the original")
     func inkInStrip() throws {
-        let original = try SyntheticPDF.make(size: SyntheticPDF.pdfMakerA4, [
+        let original = try SyntheticPDF.make(size: SyntheticPDF.nearA4, [
             .line(from: CGPoint(x: 10, y: 841.95), to: CGPoint(x: 300, y: 841.95), width: 1),
         ])
         let overlay = try SyntheticPDF.make(size: SyntheticPDF.a4, [])

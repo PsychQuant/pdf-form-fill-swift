@@ -21,8 +21,8 @@ enum SyntheticPDF {
     }
 
     static let a4 = CGSize(width: 210 / 25.4 * 72, height: 297 / 25.4 * 72)
-    /// Word → Acrobat PDFMaker A4: 4961 × 7017 dots at 600 dpi.
-    static let pdfMakerA4 = CGSize(width: 595.32, height: 842.04)
+    /// A near-A4 page (within 1.5 bp of A4), larger than A4 in both dimensions.
+    static let nearA4 = CGSize(width: 596, height: 843)
 
     static func write(_ pages: [Page], to url: URL) throws {
         guard let consumer = CGDataConsumer(url: url as CFURL),
