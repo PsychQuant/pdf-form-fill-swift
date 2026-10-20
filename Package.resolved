@@ -1,0 +1,14 @@
+{
+  "pins" : [
+    {
+      "identity" : "pdf-visual-diff-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/PsychQuant/pdf-visual-diff-swift.git",
+      "state" : {
+        "revision" : "be626c2713726621dacb3b6db5439335fc5794c4",
+        "version" : "0.1.0"
+      }
+    }
+  ],
+  "version" : 2
+}
