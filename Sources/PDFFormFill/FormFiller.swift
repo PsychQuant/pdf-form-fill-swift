@@ -2,9 +2,9 @@ import CoreGraphics
 import Foundation
 import PDFVisualDiff
 
-/// The outcome of filling a form. `passed` is false when any of the four
-/// overlay checks found a pixel; the output file is written either way so
-/// it can be inspected.
+/// The outcome of filling a form. `passed` is false when any overlay check
+/// found a pixel; the output file is written either way so it can be
+/// inspected.
 public struct FillResult: Sendable {
     public let output: URL
     public let pageSize: CGSize
@@ -15,14 +15,26 @@ public struct FillResult: Sendable {
 /// Compile → stamp → verify, in one call.
 public enum FormFiller {
 
+    /// Everything that can be checked without the engine is checked first,
+    /// so a bad resolution, an output path that names an input, or an
+    /// unusable original fails before any file is written. The original is
+    /// rendered before the output is written, and the overlay's temporary
+    /// directory is removed when the call returns.
     public static func fill(tex: URL, output: URL, pageMode: PageMode = .a4, dpi: Double = 144,
-                            engine: String = "xelatex", diffDirectory: URL? = nil) throws -> FillResult {
+                            engine: String = "xelatex", diffDirectory: URL? = nil,
+                            timeout: Double = OverlayCompiler.defaultTimeout) throws -> FillResult {
+        guard dpi.isFinite, dpi > 0, dpi <= PageRaster.maxDPI else { throw PDFVisualDiffError.invalidResolution(dpi) }
         let original = try blankForm(for: tex)
-        let overlay = try OverlayCompiler(engine: engine).compile(tex: tex)
+        try FormStamper.refuseOverwriting(inputs: [(original, "blank form"), (tex, ".tex source")], with: output)
+        let target = try FormStamper.targetSize(original: original, pageMode: pageMode)
+        let originalRaster = try PageRaster.render(url: original, pageIndex: 0, dpi: dpi)
+
+        let overlay = try OverlayCompiler(engine: engine).compile(tex: tex, pageSize: target, timeout: timeout)
+        defer { OverlayCompiler.discard(overlay) }
         try FormStamper.stamp(original: original, overlay: overlay, pageMode: pageMode, output: output)
 
         let verification = try OverlayVerifier.verify(
-            original: PageRaster.render(url: original, pageIndex: 0, dpi: dpi),
+            original: originalRaster,
             output: PageRaster.render(url: output, pageIndex: 0, dpi: dpi),
             overlay: PageRaster.render(url: overlay, pageIndex: 0, dpi: dpi))
         if let diffDirectory {

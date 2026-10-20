@@ -7,13 +7,20 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
     case emptyPDF(String)
     case multiPageOriginal(pages: Int)
     case engineNotFound(String)
-    case compilationFailed(log: String)
-    case overlayNotA4(width: Double, height: Double)
+    /// The last lines of the engine's log; the log itself is deleted with the
+    /// temporary directory, since it can contain the typed text.
+    case compilationFailed(logTail: String)
+    case compilationTimedOut(seconds: Double)
+    case overlayWrongSize(width: Double, height: Double, expectedWidth: Double, expectedHeight: Double)
     case overlayPageCount(Int)
     case notNearA4(width: Double, height: Double)
     case inkInRemovedStrip(pixels: Int)
+    case rotatedOriginal(degrees: Int)
+    case annotatedOriginal(count: Int)
     case blankFormMacroMissing(String)
     case blankFormNotFound(String)
+    case unsafeBlankFormPath(String)
+    case outputIsInput(path: String, role: String)
     case outputWriteFailed(String)
 
     public var description: String {
@@ -26,20 +33,37 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
             return "the original has \(pages) pages; only single-page forms are supported"
         case .engineNotFound(let engine):
             return "TeX engine not found: \(engine)"
-        case .compilationFailed(let log):
-            return "overlay compilation failed; see \(log)"
-        case let .overlayNotA4(width, height):
-            return String(format: "the overlay page is %.2f × %.2f bp, not A4 (595.28 × 841.89 bp); use a4paper", width, height)
+        case .compilationFailed(let logTail):
+            return "overlay compilation failed; end of the log:\n\(logTail)"
+        case .compilationTimedOut(let seconds):
+            return String(format: "overlay compilation did not finish within %g seconds and was stopped", seconds)
+        case let .overlayWrongSize(width, height, expectedWidth, expectedHeight):
+            return String(format: "the overlay page is %.2f × %.2f bp, but the output page is %.2f × %.2f bp; "
+                + "the overlay must have the output's size (A4 for page mode a4, the original's size for page mode "
+                + "original), set with the geometry package", width, height, expectedWidth, expectedHeight)
         case .overlayPageCount(let pages):
             return "the overlay has \(pages) pages; it must have exactly one"
         case let .notNearA4(width, height):
-            return String(format: "the original is %.2f × %.2f bp, not near A4; use page mode 'original'", width, height)
+            return String(format: "the original is %.2f × %.2f bp, not near A4; fill it in page mode 'original' "
+                + "with an overlay of the same size (form-skeleton writes that size for such forms)", width, height)
         case .inkInRemovedStrip(let pixels):
-            return "normalizing to A4 would crop \(pixels) inked pixel\(pixels == 1 ? "" : "s") of the original; use page mode 'original'"
+            return "normalizing to A4 would crop \(pixels) inked pixel\(pixels == 1 ? "" : "s") of the original; "
+                + "fill it in page mode 'original' with an overlay of the original's size"
+        case .rotatedOriginal(let degrees):
+            return "the original page is rotated by \(degrees)°; only unrotated pages are supported"
+        case .annotatedOriginal(let count):
+            return "the original carries \(count) annotation\(count == 1 ? "" : "s") (links, form fields or comments); "
+                + "stamping redraws only the page content, so they would be lost where the pixel check cannot see it; "
+                + "flatten the PDF first"
         case .blankFormMacroMissing(let path):
             return "no \\newcommand{\\BlankForm}{…} (or \\def\\BlankForm{…}) in \(path)"
         case .blankFormNotFound(let path):
             return "blank form not found: \(path)"
+        case .unsafeBlankFormPath(let path):
+            return "the blank form's path contains a character TeX would misread (\\ { } % # ^ or a control character): "
+                + "\(path.debugDescription); rename the file"
+        case let .outputIsInput(path, role):
+            return "refusing to write the output over the \(role): \(path); choose another output path"
         case .outputWriteFailed(let path):
             return "cannot write \(path)"
         }

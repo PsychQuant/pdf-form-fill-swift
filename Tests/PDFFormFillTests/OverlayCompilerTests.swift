@@ -62,16 +62,15 @@ struct OverlayCompilerTests {
         #expect(after == before)
     }
 
-    @Test("a compile error names the log file", .enabled(if: xelatexAvailable, "xelatex not found"))
-    func compileErrorNamesLog() throws {
+    @Test("a compile error carries the end of the log", .enabled(if: xelatexAvailable, "xelatex not found"))
+    func compileErrorCarriesLog() throws {
         let dir = try Self.workspace()
         let tex = try Self.write("\\documentclass{article}\\begin{document}\\undefinedcommandxyz\\end{document}", in: dir)
         do {
             _ = try OverlayCompiler().compile(tex: tex)
             Issue.record("compilation unexpectedly succeeded")
-        } catch FormFillError.compilationFailed(let log) {
-            #expect(log.hasSuffix(".log"))
-            #expect(FileManager.default.fileExists(atPath: log))
+        } catch FormFillError.compilationFailed(let logTail) {
+            #expect(logTail.contains("Undefined control sequence"))
         }
     }
 
@@ -82,8 +81,8 @@ struct OverlayCompilerTests {
         let error = #expect(throws: FormFillError.self) {
             try OverlayCompiler().compile(tex: tex)
         }
-        guard case .overlayNotA4(let width, let height)? = error else {
-            Issue.record("expected overlayNotA4, got \(String(describing: error))")
+        guard case let .overlayWrongSize(width, height, _, _)? = error else {
+            Issue.record("expected overlayWrongSize, got \(String(describing: error))")
             return
         }
         #expect(abs(width - 614.295) < 0.5 || abs(width - 612) < 0.5)

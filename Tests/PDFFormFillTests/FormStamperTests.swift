@@ -45,7 +45,7 @@ struct FormStamperTests {
     @Test("page mode original keeps the original size")
     func keepOriginalSize() throws {
         let original = try SyntheticPDF.make(size: SyntheticPDF.nearA4, Self.formItems)
-        let overlay = try SyntheticPDF.make(size: SyntheticPDF.a4, [
+        let overlay = try SyntheticPDF.make(size: SyntheticPDF.nearA4, [
             .text("42", at: CGPoint(x: 123, y: 310), size: 12, font: "Helvetica"),
         ])
         let output = Self.output()

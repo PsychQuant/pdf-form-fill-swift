@@ -6,8 +6,8 @@ import Testing
 
 struct FormSkeletonTests {
 
-    /// Word puts the labels of one form row on one text line separated by
-    /// spaces; the expected glyph positions come from CoreText, not PDFKit.
+    /// Three labels on one text line separated by spaces; the expected glyph
+    /// positions come from CoreText, not PDFKit.
     static let labelRow = "甲      乙      丙"
 
     static func glyphOffsets(_ text: String, font: String, size: CGFloat) -> [CGFloat] {
@@ -25,9 +25,9 @@ struct FormSkeletonTests {
 
     static func blankForm() throws -> URL {
         try SyntheticPDF.make(size: SyntheticPDF.nearA4, [
-            .text("標題文字", at: CGPoint(x: 300, y: 114.5), size: 10, font: "PingFang TC"),
+            .text("標題", at: CGPoint(x: 300, y: 100), size: 10, font: "PingFang TC"),
             .text(labelRow, at: CGPoint(x: 150, y: 300), size: 12, font: "PingFang TC"),
-            .line(from: CGPoint(x: 96, y: 120), to: CGPoint(x: 489, y: 120), width: 1),
+            .line(from: CGPoint(x: 100, y: 120), to: CGPoint(x: 500, y: 120), width: 1),
         ])
     }
 
@@ -38,7 +38,7 @@ struct FormSkeletonTests {
         // Glyph indices of 甲, 乙, 丙 in the row (spaces in between).
         let characters = Array(Self.labelRow)
         let expected: [(String, CGFloat, CGFloat)] = [
-            ("標題文字", 300, 114.5),
+            ("標題", 300, 100),
             ("甲", 150 + offsets[characters.firstIndex(of: "甲")!], 300),
             ("乙", 150 + offsets[characters.firstIndex(of: "乙")!], 300),
             ("丙", 150 + offsets[characters.firstIndex(of: "丙")!], 300),
