@@ -195,7 +195,8 @@ struct Round1FixTests {
         }
         // 24 characters of 12 bp do not fit in 120 bp: at least three lines.
         #expect((inkRows.max() ?? 0) - (inkRows.min() ?? 0) > 24)
-        #expect(maxX <= 221)
+        // The box ends at x = 100 + 120 = 220 bp, which is pixel column 220 at 72 dpi.
+        #expect(maxX < 220, "rightmost ink at column \(maxX)")
     }
 
     // MARK: compiler

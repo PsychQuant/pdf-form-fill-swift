@@ -59,14 +59,18 @@ public struct OverlayCompiler: Sendable {
     /// done. The page must be `pageSize` within 0.01 bp (A4 by default).
     public func compile(tex: URL, pageSize: CGSize = PageGeometry.a4,
                         timeout: Double = OverlayCompiler.defaultTimeout) throws -> URL {
+        guard timeout.isFinite, timeout > 0 else { throw FormFillError.invalidTimeout(timeout) }
         guard let executable = Self.locate(engine) else {
             throw FormFillError.engineNotFound(engine)
         }
+        // A symbolic link is followed, so relative paths resolve next to the real file.
+        let tex = tex.resolvingSymlinksInPath()
         let output = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(Self.directoryPrefix)\(UUID().uuidString)", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
-            try FileManager.default.copyItem(at: tex, to: output.appendingPathComponent("overlay.tex"))
+            // The contents, not the item: a relative link would dangle there.
+            try Data(contentsOf: tex).write(to: output.appendingPathComponent("overlay.tex"))
         } catch {
             try? FileManager.default.removeItem(at: output)
             throw FormFillError.outputWriteFailed(output.path)
@@ -80,10 +84,16 @@ public struct OverlayCompiler: Sendable {
     }
 
     /// Removes the temporary directory of an overlay returned by `compile`.
-    /// Anything that is not such a directory is left alone.
+    /// Only a directory this compiler creates is removed: one whose name
+    /// starts with the prefix, directly inside the temporary directory, and
+    /// holding the copied `overlay.tex`. Anything else is left alone.
     public static func discard(_ overlay: URL) {
-        let directory = overlay.deletingLastPathComponent()
-        guard directory.lastPathComponent.hasPrefix(directoryPrefix) else { return }
+        let directory = overlay.deletingLastPathComponent().resolvingSymlinksInPath()
+        let temporary = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        guard directory.lastPathComponent.hasPrefix(directoryPrefix),
+              directory.deletingLastPathComponent().standardizedFileURL.path == temporary.standardizedFileURL.path,
+              FileManager.default.fileExists(atPath: directory.appendingPathComponent("overlay.tex").path)
+        else { return }
         try? FileManager.default.removeItem(at: directory)
     }
 
@@ -110,9 +120,7 @@ public struct OverlayCompiler: Sendable {
                 throw FormFillError.engineNotFound(executable.path)
             }
             if finished.wait(timeout: .now() + max(0, deadline.timeIntervalSinceNow)) == .timedOut {
-                process.terminate()
-                if finished.wait(timeout: .now() + 5) == .timedOut { kill(process.processIdentifier, SIGKILL) }
-                process.waitUntilExit()
+                Self.stop(process)
                 throw FormFillError.compilationTimedOut(seconds: timeout)
             }
             guard process.terminationStatus == 0 else {
@@ -134,6 +142,23 @@ public struct OverlayCompiler: Sendable {
                                                  expectedHeight: Double(pageSize.height))
         }
         return pdf
+    }
+
+    /// Stops the engine and the helpers it started (xdvipdfmx and the like):
+    /// children first, so none is left behind, then the engine itself.
+    private static func stop(_ process: Process) {
+        let pid = process.processIdentifier
+        let killChildren = Process()
+        killChildren.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        killChildren.arguments = ["-KILL", "-P", String(pid)]
+        killChildren.standardOutput = FileHandle.nullDevice
+        killChildren.standardError = FileHandle.nullDevice
+        if (try? killChildren.run()) != nil { killChildren.waitUntilExit() }
+        process.terminate()
+        let deadline = Date().addingTimeInterval(5)
+        while process.isRunning && Date() < deadline { usleep(50_000) }
+        if process.isRunning { kill(pid, SIGKILL) }
+        process.waitUntilExit()
     }
 
     /// The last lines of a log, or a note that there is none.

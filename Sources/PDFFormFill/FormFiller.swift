@@ -24,6 +24,10 @@ public enum FormFiller {
                             engine: String = "xelatex", diffDirectory: URL? = nil,
                             timeout: Double = OverlayCompiler.defaultTimeout) throws -> FillResult {
         guard dpi.isFinite, dpi > 0, dpi <= PageRaster.maxDPI else { throw PDFVisualDiffError.invalidResolution(dpi) }
+        guard timeout.isFinite, timeout > 0 else { throw FormFillError.invalidTimeout(timeout) }
+        // A .tex reached through a symbolic link behaves like the file itself:
+        // \BlankForm and TeX's relative paths resolve next to the real file.
+        let tex = tex.resolvingSymlinksInPath()
         let original = try blankForm(for: tex)
         try FormStamper.refuseOverwriting(inputs: [(original, "blank form"), (tex, ".tex source")], with: output)
         let target = try FormStamper.targetSize(original: original, pageMode: pageMode)
@@ -31,6 +35,10 @@ public enum FormFiller {
 
         let overlay = try OverlayCompiler(engine: engine).compile(tex: tex, pageSize: target, timeout: timeout)
         defer { OverlayCompiler.discard(overlay) }
+        // Ink beyond the overlay's page is clipped from every render, so the
+        // overlay checks would never see typed text that was cut off.
+        let offPage = try PageGeometry.inkOutsideCropBox(page: PageRaster.page(url: overlay, index: 0))
+        guard offPage == 0 else { throw FormFillError.overlayInkOffPage(pixels: offPage) }
         try FormStamper.stamp(original: original, overlay: overlay, pageMode: pageMode, output: output)
 
         let verification = try OverlayVerifier.verify(

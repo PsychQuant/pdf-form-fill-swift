@@ -47,6 +47,7 @@ struct OverlayCompilerTests {
         let form = try FormSkeletonTests.blankForm()
         let tex = try Self.write(FormSkeleton.generate(blankForm: form), in: dir)
         let pdf = try OverlayCompiler().compile(tex: tex)
+        defer { OverlayCompiler.discard(pdf) }
         let page = try PageRaster.page(url: pdf, index: 0)
         #expect(PageGeometry.classify(page.getBoxRect(.cropBox).size) == .exactA4)
         #expect(CGPDFDocument(pdf as CFURL)?.numberOfPages == 1)
@@ -57,7 +58,7 @@ struct OverlayCompilerTests {
         let dir = try Self.workspace()
         let tex = try Self.write(Self.minimalA4, in: dir)
         let before = try FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()
-        _ = try OverlayCompiler().compile(tex: tex)
+        OverlayCompiler.discard(try OverlayCompiler().compile(tex: tex))
         let after = try FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()
         #expect(after == before)
     }

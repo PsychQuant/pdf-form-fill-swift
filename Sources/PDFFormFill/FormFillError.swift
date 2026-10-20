@@ -11,16 +11,20 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
     /// temporary directory, since it can contain the typed text.
     case compilationFailed(logTail: String)
     case compilationTimedOut(seconds: Double)
+    case invalidTimeout(Double)
     case overlayWrongSize(width: Double, height: Double, expectedWidth: Double, expectedHeight: Double)
     case overlayPageCount(Int)
     case notNearA4(width: Double, height: Double)
     case inkInRemovedStrip(pixels: Int)
     case rotatedOriginal(degrees: Int)
     case annotatedOriginal(count: Int)
+    case rotatedOverlay(degrees: Int)
+    case overlayInkOffPage(pixels: Int)
     case blankFormMacroMissing(String)
     case blankFormNotFound(String)
     case unsafeBlankFormPath(String)
     case outputIsInput(path: String, role: String)
+    case outputNotAFile(path: String)
     case outputWriteFailed(String)
 
     public var description: String {
@@ -37,6 +41,8 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
             return "overlay compilation failed; end of the log:\n\(logTail)"
         case .compilationTimedOut(let seconds):
             return String(format: "overlay compilation did not finish within %g seconds and was stopped", seconds)
+        case .invalidTimeout(let seconds):
+            return "the compile timeout must be a positive finite number of seconds, got \(seconds)"
         case let .overlayWrongSize(width, height, expectedWidth, expectedHeight):
             return String(format: "the overlay page is %.2f × %.2f bp, but the output page is %.2f × %.2f bp; "
                 + "the overlay must have the output's size (A4 for page mode a4, the original's size for page mode "
@@ -55,6 +61,11 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
             return "the original carries \(count) annotation\(count == 1 ? "" : "s") (links, form fields or comments); "
                 + "stamping redraws only the page content, so they would be lost where the pixel check cannot see it; "
                 + "flatten the PDF first"
+        case .rotatedOverlay(let degrees):
+            return "the overlay page is rotated by \(degrees)°; only unrotated overlays are supported"
+        case .overlayInkOffPage(let pixels):
+            return "the overlay has \(pixels) inked pixel\(pixels == 1 ? "" : "s") outside its page, so typed text "
+                + "runs past the page edge and would be cut off; move or shorten it"
         case .blankFormMacroMissing(let path):
             return "no \\newcommand{\\BlankForm}{…} (or \\def\\BlankForm{…}) in \(path)"
         case .blankFormNotFound(let path):
@@ -64,6 +75,9 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
                 + "\(path.debugDescription); rename the file"
         case let .outputIsInput(path, role):
             return "refusing to write the output over the \(role): \(path); choose another output path"
+        case .outputNotAFile(let path):
+            return "the output exists and is not a regular file (a directory or a symbolic link): \(path); "
+                + "give the path of a PDF file to write"
         case .outputWriteFailed(let path):
             return "cannot write \(path)"
         }

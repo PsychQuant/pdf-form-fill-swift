@@ -75,6 +75,7 @@ struct FormStamperTests {
         \\end{document}
         """, in: dir)
         let overlay = try OverlayCompiler().compile(tex: tex)
+        defer { OverlayCompiler.discard(overlay) }
         let output = Self.output()
         try FormStamper.stamp(original: original, overlay: overlay, pageMode: .a4, output: output)
         let report = try Self.verify(original: original, output: output, overlay: overlay)

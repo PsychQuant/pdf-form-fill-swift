@@ -21,15 +21,19 @@ public enum FormStamper {
     /// overlay page drawn 1:1 the same way, each clipped to its own page box.
     /// Neither is scaled; the page content is redrawn as vector content, not
     /// rasterized. The overlay must have the output's page size. The original
-    /// file is only read, and `output` may not be the original or the overlay.
-    /// On error nothing is written to `output`.
+    /// file is only read; `output` may not be the original or the overlay,
+    /// and when it exists it must be a regular file, never a directory or a
+    /// symbolic link. On error nothing is written to `output`.
     public static func stamp(original: URL, overlay: URL, pageMode: PageMode = .a4, output: URL) throws {
-        try refuseOverwriting(inputs: [(original, "blank form"), (overlay, "compiled overlay")], with: output)
+        let inputs = [(original, "blank form"), (overlay, "compiled overlay")]
+        try refuseOverwriting(inputs: inputs, with: output)
         let page = try singlePage(original, isOriginal: true)
         let box = page.getBoxRect(.cropBox)
         let target = try targetSize(of: page, pageMode: pageMode)
 
         let overlayPage = try singlePage(overlay, isOriginal: false)
+        let overlayRotation = ((Int(overlayPage.rotationAngle) % 360) + 360) % 360
+        guard overlayRotation == 0 else { throw FormFillError.rotatedOverlay(degrees: overlayRotation) }
         let overlayBox = overlayPage.getBoxRect(.cropBox)
         guard abs(overlayBox.width - target.width) <= PageGeometry.exactTolerance,
               abs(overlayBox.height - target.height) <= PageGeometry.exactTolerance else {
@@ -57,11 +61,16 @@ public enum FormStamper {
         context.closePDF()
 
         do {
-            if FileManager.default.fileExists(atPath: output.path) {
+            // Checked again: the output may have appeared since the first check.
+            try refuseOverwriting(inputs: inputs, with: output)
+            if itemType(output) == .typeRegular {
                 _ = try FileManager.default.replaceItemAt(output, withItemAt: temporary)
             } else {
                 try FileManager.default.moveItem(at: temporary, to: output)
             }
+        } catch let error as FormFillError {
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
         } catch {
             try? FileManager.default.removeItem(at: temporary)
             throw FormFillError.outputWriteFailed(output.path)
@@ -104,11 +113,22 @@ public enum FormStamper {
         return CGPDFArrayGetCount(annotations)
     }
 
-    /// Throws when `output` is, or links to, one of `inputs`.
+    /// Throws when `output` is, or links to, one of `inputs`, or when it
+    /// exists and is not a regular file: replacing a directory would delete
+    /// everything in it, and writing a symbolic link would write elsewhere.
     static func refuseOverwriting(inputs: [(URL, String)], with output: URL) throws {
         for (input, role) in inputs where sameFile(output, input) {
             throw FormFillError.outputIsInput(path: output.path, role: role)
         }
+        if let type = itemType(output), type != .typeRegular {
+            throw FormFillError.outputNotAFile(path: output.path)
+        }
+    }
+
+    /// The type of the item at `url` without following a final symbolic
+    /// link, or nil when nothing is there.
+    static func itemType(_ url: URL) -> FileAttributeType? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType
     }
 
     /// True when both paths name one existing file: after resolving symbolic

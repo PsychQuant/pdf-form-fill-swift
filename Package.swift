@@ -8,7 +8,7 @@ let package = Package(
         .library(name: "PDFFormFill", targets: ["PDFFormFill"])
     ],
     dependencies: [
-        .package(url: "https://github.com/PsychQuant/pdf-visual-diff-swift.git", from: "0.2.0")
+        .package(url: "https://github.com/PsychQuant/pdf-visual-diff-swift.git", .upToNextMinor(from: "0.3.0"))
     ],
     targets: [
         .target(

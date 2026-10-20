@@ -33,7 +33,9 @@ print(result.passed, result.report.checks)
 `\def\BlankForm{…}`) in the .tex; a relative path is resolved against the
 .tex file's directory. The output is written even when a check fails, so it
 can be inspected. The output may not be the blank form, the .tex or a link to
-either; such a path is refused before anything is written.
+either, and when it exists it must be a regular file, never a directory or a
+symbolic link; such a path is refused before anything is written. A .tex
+reached through a symbolic link behaves like the file itself.
 
 `\at{x}{y}{size}{text}` places one line with the left end of its baseline at
 (x, y). `\atbox{x}{y}{width}{size}{text}` does the same for a field of several
@@ -48,12 +50,14 @@ printed ink, nothing printed was cropped, and all typed text reached the
 output. Before stamping, originals that cannot be carried over faithfully are
 refused: more than one page, a rotated page, or annotations (links, form
 fields, comments), whose appearances a redraw drops and a render of the
-original does not show.
+original does not show. After compiling, an overlay with ink outside its page
+is refused, because typed text running past the page edge would be cut off
+where no render can see it.
 
 ## Page size
 
-- `.a4` (default): a near-A4 original (within 1.5 bp, for example the
-  595.32 × 841.92 bp that Acrobat PDFMaker produces for A4) becomes exact
+- `.a4` (default): a near-A4 original (within 1.5 bp, for example a page
+  whose producer rounded its size to a device grid) becomes exact
   A4 (210 × 297 mm) by keeping its top-left corner. Nothing is scaled; if the
   strip that would be removed contains ink, stamping is refused.
 - `.original`: the original page size is kept.
@@ -77,9 +81,11 @@ never rasterized or scaled.
 The .tex is trusted input: TeX can read any file the user can, so fill only
 overlays you wrote or reviewed. The engine runs with `-no-shell-escape`, gets
 the source under a fixed name in a fresh temporary directory, and is stopped
-after 120 seconds (`timeout:`). The temporary directory, which holds the
-typed text, is removed when `fill` returns; on a compile error the end of the
-log is carried in the error instead.
+after 120 seconds (`timeout:`, a positive number of seconds), together with
+the helpers it started. The temporary directory, which holds the typed text,
+is removed when `fill` returns; on a compile error the end of the log is
+carried in the error instead. `OverlayCompiler.discard(_:)` removes only a
+directory the compiler created.
 
 ## Known limitation
 
