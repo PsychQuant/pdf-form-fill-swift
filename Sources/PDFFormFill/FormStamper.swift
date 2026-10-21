@@ -41,9 +41,10 @@ public enum FormStamper {
                                                  expectedWidth: Double(target.width), expectedHeight: Double(target.height))
         }
 
-        // A short name, so a long output name still fits the file system.
+        // A name independent of the output's, so a long output name still
+        // fits the file system, with 128 random bits.
         let temporary = output.deletingLastPathComponent()
-            .appendingPathComponent(".pff-\(UUID().uuidString.prefix(8)).tmp")
+            .appendingPathComponent(".pff-\(UUID().uuidString.replacingOccurrences(of: "-", with: "")).tmp")
         var mediaBox = CGRect(origin: .zero, size: target)
         guard let context = CGContext(temporary as CFURL, mediaBox: &mediaBox, nil) else {
             throw FormFillError.outputWriteFailed(output.path)
@@ -68,9 +69,13 @@ public enum FormStamper {
             try? FileManager.default.removeItem(at: temporary)
             throw error
         }
+        // rename(2) replaces the file, so carry over the old one's permissions.
+        if itemType(output) == .typeRegular,
+           let mode = (try? FileManager.default.attributesOfItem(atPath: output.path))?[.posixPermissions] {
+            try? FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: temporary.path)
+        }
         try moveIntoPlace(temporary, to: output)
     }
-
     /// rename(2): one atomic step that replaces a regular file (or a link
     /// entry, without following it) and fails on a directory, deleting
     /// nothing. On failure the temporary file is removed.

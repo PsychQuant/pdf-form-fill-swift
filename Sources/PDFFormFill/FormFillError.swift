@@ -20,6 +20,7 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
     case annotatedOriginal(count: Int)
     case rotatedOverlay(degrees: Int)
     case overlayInkOffPage(pixels: Int)
+    case overlayTextOffPage(characters: Int)
     case blankFormMacroMissing(String)
     case blankFormNotFound(String)
     case unsafeBlankFormPath(String)
@@ -68,6 +69,9 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
         case .overlayInkOffPage(let pixels):
             return "the overlay has \(pixels) inked pixel\(pixels == 1 ? "" : "s") outside its page, so typed text "
                 + "runs past the page edge and would be cut off; move or shorten it"
+        case .overlayTextOffPage(let characters):
+            return "the overlay draws at \(characters) position\(characters == 1 ? "" : "s") more than a page beyond its edge, "
+                + "where no render shows it; check the field coordinates"
         case .blankFormMacroMissing(let path):
             return "no \\newcommand{\\BlankForm}{…} (or \\def\\BlankForm{…}) in \(path)"
         case .blankFormNotFound(let path):
@@ -80,7 +84,7 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
         case let .diffArtifactCollides(path, role):
             return "the diff artifact \(path) would replace the \(role); choose another diff directory"
         case .unreadableSource(let path):
-            return "cannot read the .tex: \(path)"
+            return "cannot read the .tex as UTF-8 text: \(path)"
         case .outputNotAFile(let path):
             return "the output exists and is not a regular file (a directory or a symbolic link): \(path); "
                 + "give the path of a PDF file to write"

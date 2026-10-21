@@ -156,11 +156,15 @@ public struct OverlayCompiler: Sendable {
         return pdf
     }
 
-    /// Stops the engine and every process it started, at any depth
-    /// (xdvipdfmx and the like). The tree is frozen first so nothing new is
-    /// spawned while it is walked, then killed from the leaves up.
+    /// Stops the engine and the processes it started (xdvipdfmx and the
+    /// like). Process starts the engine as the leader of its own process
+    /// group, so signalling the group also reaches descendants orphaned by
+    /// an exited parent; descendants still attached to the tree are found by
+    /// walking it, in case one changed its group. Everything is frozen first
+    /// so nothing new is spawned, then killed.
     private static func stop(_ process: Process) {
         let pid = process.processIdentifier
+        kill(-pid, SIGSTOP)
         kill(pid, SIGSTOP)
         var tree: [pid_t] = []
         var frontier = [pid]
@@ -171,8 +175,9 @@ public struct OverlayCompiler: Sendable {
                 frontier.append(child)
             }
         }
+        kill(-pid, SIGKILL)
         for child in tree.reversed() { kill(child, SIGKILL) }
-        kill(pid, SIGKILL)
+        if process.isRunning { kill(pid, SIGKILL) }
         process.waitUntilExit()
     }
 

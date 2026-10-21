@@ -35,7 +35,8 @@ print(result.passed, result.report.checks)
 can be inspected. The output may not be the blank form, the .tex or a link to
 either, and when it exists it must be a regular file, never a directory or a
 symbolic link; such a path is refused before anything is written. The output
-is moved into place with one `rename`, which can never replace a directory.
+is moved into place with one `rename`, which can never replace a directory,
+and keeps the permissions of an output it replaces.
 With a diff directory, none of the four artifacts may name the output, the
 blank form or the .tex. A .tex reached through a symbolic link behaves like the
 file itself.
@@ -53,9 +54,10 @@ printed ink, nothing printed was cropped, and all typed text reached the
 output. Before stamping, originals that cannot be carried over faithfully are
 refused: more than one page, a rotated page, or annotations (links, form
 fields, comments), whose appearances a redraw drops and a render of the
-original does not show. After compiling, an overlay with ink outside its page
-is refused, because typed text running past the page edge would be cut off
-where no render can see it.
+original does not show. After compiling, an overlay that draws outside its page
+is refused, because no render shows that part: ink within one page of the edge
+is found pixel by pixel, and drawing placed farther away is found by reading
+the overlay's content stream, at any distance.
 
 ## Page size
 
@@ -85,7 +87,7 @@ The .tex is trusted input: TeX can read any file the user can, so fill only
 overlays you wrote or reviewed. The engine runs with `-no-shell-escape`, gets
 the source under a fixed name in a fresh temporary directory, and is stopped
 after 120 seconds (`timeout:`, a positive number of seconds), together with
-every process it started. The temporary directory, which holds the typed text,
+its process group and the descendants still attached to it. The temporary directory, which holds the typed text,
 is readable by its owner only and is removed when `fill` returns; on a compile
 error the end of the log is carried in the error instead.
 `OverlayCompiler.discard(_:)` removes only a directory the compiler created in

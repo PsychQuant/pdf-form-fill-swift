@@ -140,7 +140,7 @@ public enum FormSkeleton {
             "\\newcommand{\\BlankForm}{\(path)}",
         ]
         for (index, label) in labels.enumerated() {
-            lines.append("\\newcommand{\\\(fieldMacroName(index))}{} % \(label.text)")
+            lines.append("\\newcommand{\\\(fieldMacroName(index))}{} % \(printable(label.text))")
         }
         lines += [
             "% ====================================================",
@@ -153,10 +153,19 @@ public enum FormSkeleton {
             "\\begin{tikzpicture}[remember picture,overlay]",
         ]
         for (index, label) in labels.enumerated() {
-            lines.append("% \\at{\(bp(label.right + 2))}{\(bp(label.baseline))}{\(bp(label.fontSize))}{\\\(fieldMacroName(index))}; % \(label.text) (\(bp(label.left)), \(bp(label.baseline)))")
+            lines.append("% \\at{\(bp(label.right + 2))}{\(bp(label.baseline))}{\(bp(label.fontSize))}{\\\(fieldMacroName(index))}; % \(printable(label.text)) (\(bp(label.left)), \(bp(label.baseline)))")
         }
         lines += ["\\end{tikzpicture}", "\\end{document}", ""]
         return lines.joined(separator: "\n")
+    }
+
+    /// `text` with every control character replaced by "?": label text is
+    /// copied into comments, which a control character could end, and the
+    /// skeleton may be printed on a terminal.
+    static func printable(_ text: String) -> String {
+        String(String.UnicodeScalarView(text.unicodeScalars.map {
+            CharacterSet.controlCharacters.contains($0) ? "?" : $0
+        }))
     }
 
     /// `FieldA` … `FieldZ`, `FieldAA`, `FieldAB`, …: TeX macro names may

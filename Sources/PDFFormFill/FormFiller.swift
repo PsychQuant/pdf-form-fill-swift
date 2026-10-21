@@ -30,14 +30,8 @@ public enum FormFiller {
         let tex = tex.resolvingSymlinksInPath()
         let original = try blankForm(for: tex)
         try FormStamper.refuseOverwriting(inputs: [(original, "blank form"), (tex, ".tex source")], with: output)
-        if let diffDirectory {
-            let protected = [(output, "output"), (original, "blank form"), (tex, ".tex source")]
-            for artifact in DiffArtifacts.paths(in: diffDirectory) {
-                if let role = FormStamper.collision(of: artifact, with: protected) {
-                    throw FormFillError.diffArtifactCollides(path: artifact.path, role: role)
-                }
-            }
-        }
+        let protected = [(output, "output"), (original, "blank form"), (tex, ".tex source")]
+        try refuseArtifactCollisions(diffDirectory, protected)
         let target = try FormStamper.targetSize(original: original, pageMode: pageMode)
         let originalRaster = try PageRaster.render(url: original, pageIndex: 0, dpi: dpi)
 
@@ -47,6 +41,10 @@ public enum FormFiller {
         // overlay checks would never see typed text that was cut off.
         let offPage = try PageGeometry.inkOutsideCropBox(page: PageRaster.page(url: overlay, index: 0))
         guard offPage == 0 else { throw FormFillError.overlayInkOffPage(pixels: offPage) }
+        // The render reaches one page beyond each edge; drawing placed
+        // farther away is found from the content stream, wherever it is.
+        let farAway = try ContentExtent.positionsFarOutside(page: PageRaster.page(url: overlay, index: 0))
+        guard farAway == 0 else { throw FormFillError.overlayTextOffPage(characters: farAway) }
         try FormStamper.stamp(original: original, overlay: overlay, pageMode: pageMode, output: output)
 
         let verification = try OverlayVerifier.verify(
@@ -54,10 +52,17 @@ public enum FormFiller {
             output: PageRaster.render(url: output, pageIndex: 0, dpi: dpi),
             overlay: PageRaster.render(url: overlay, pageIndex: 0, dpi: dpi))
         if let diffDirectory {
+            // Checked again now that the output exists, by file identity too.
+            try refuseArtifactCollisions(diffDirectory, protected)
             try DiffArtifacts.write(diff: verification.diff, checks: verification.report.checks, to: diffDirectory)
         }
         let size = try PageRaster.page(url: output, index: 0).getBoxRect(.cropBox).size
         return FillResult(output: output, pageSize: size, report: verification.report)
+    }
+
+    private static func refuseArtifactCollisions(_ directory: URL?, _ protected: [(URL, String)]) throws {
+        guard let directory, let hit = DiffArtifacts.collision(in: directory, with: protected) else { return }
+        throw FormFillError.diffArtifactCollides(path: hit.artifact.path, role: hit.role)
     }
 
     /// The blank form named by `\newcommand{\BlankForm}{…}` or `\def\BlankForm{…}`
