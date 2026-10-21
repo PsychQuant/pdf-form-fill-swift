@@ -34,8 +34,11 @@ print(result.passed, result.report.checks)
 .tex file's directory. The output is written even when a check fails, so it
 can be inspected. The output may not be the blank form, the .tex or a link to
 either, and when it exists it must be a regular file, never a directory or a
-symbolic link; such a path is refused before anything is written. A .tex
-reached through a symbolic link behaves like the file itself.
+symbolic link; such a path is refused before anything is written. The output
+is moved into place with one `rename`, which can never replace a directory.
+With a diff directory, none of the four artifacts may name the output, the
+blank form or the .tex. A .tex reached through a symbolic link behaves like the
+file itself.
 
 `\at{x}{y}{size}{text}` places one line with the left end of its baseline at
 (x, y). `\atbox{x}{y}{width}{size}{text}` does the same for a field of several
@@ -82,10 +85,11 @@ The .tex is trusted input: TeX can read any file the user can, so fill only
 overlays you wrote or reviewed. The engine runs with `-no-shell-escape`, gets
 the source under a fixed name in a fresh temporary directory, and is stopped
 after 120 seconds (`timeout:`, a positive number of seconds), together with
-the helpers it started. The temporary directory, which holds the typed text,
-is removed when `fill` returns; on a compile error the end of the log is
-carried in the error instead. `OverlayCompiler.discard(_:)` removes only a
-directory the compiler created.
+every process it started. The temporary directory, which holds the typed text,
+is readable by its owner only and is removed when `fill` returns; on a compile
+error the end of the log is carried in the error instead.
+`OverlayCompiler.discard(_:)` removes only a directory the compiler created in
+the same process.
 
 ## Known limitation
 

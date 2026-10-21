@@ -30,6 +30,14 @@ public enum FormFiller {
         let tex = tex.resolvingSymlinksInPath()
         let original = try blankForm(for: tex)
         try FormStamper.refuseOverwriting(inputs: [(original, "blank form"), (tex, ".tex source")], with: output)
+        if let diffDirectory {
+            let protected = [(output, "output"), (original, "blank form"), (tex, ".tex source")]
+            for artifact in DiffArtifacts.paths(in: diffDirectory) {
+                if let role = FormStamper.collision(of: artifact, with: protected) {
+                    throw FormFillError.diffArtifactCollides(path: artifact.path, role: role)
+                }
+            }
+        }
         let target = try FormStamper.targetSize(original: original, pageMode: pageMode)
         let originalRaster = try PageRaster.render(url: original, pageIndex: 0, dpi: dpi)
 
@@ -59,7 +67,7 @@ public enum FormFiller {
         do {
             source = try String(contentsOf: tex, encoding: .utf8)
         } catch {
-            throw FormFillError.blankFormMacroMissing(tex.path)
+            throw FormFillError.unreadableSource(tex.path)
         }
         let patterns = [#"\\newcommand\{\\BlankForm\}\{([^}]*)\}"#, #"\\def\\BlankForm\{([^}]*)\}"#]
         for pattern in patterns {

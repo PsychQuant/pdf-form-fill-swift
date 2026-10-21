@@ -41,8 +41,9 @@ public enum FormStamper {
                                                  expectedWidth: Double(target.width), expectedHeight: Double(target.height))
         }
 
+        // A short name, so a long output name still fits the file system.
         let temporary = output.deletingLastPathComponent()
-            .appendingPathComponent(".\(output.lastPathComponent).\(UUID().uuidString).tmp")
+            .appendingPathComponent(".pff-\(UUID().uuidString.prefix(8)).tmp")
         var mediaBox = CGRect(origin: .zero, size: target)
         guard let context = CGContext(temporary as CFURL, mediaBox: &mediaBox, nil) else {
             throw FormFillError.outputWriteFailed(output.path)
@@ -63,18 +64,24 @@ public enum FormStamper {
         do {
             // Checked again: the output may have appeared since the first check.
             try refuseOverwriting(inputs: inputs, with: output)
-            if itemType(output) == .typeRegular {
-                _ = try FileManager.default.replaceItemAt(output, withItemAt: temporary)
-            } else {
-                try FileManager.default.moveItem(at: temporary, to: output)
-            }
-        } catch let error as FormFillError {
-            try? FileManager.default.removeItem(at: temporary)
-            throw error
         } catch {
             try? FileManager.default.removeItem(at: temporary)
-            throw FormFillError.outputWriteFailed(output.path)
+            throw error
         }
+        try moveIntoPlace(temporary, to: output)
+    }
+
+    /// rename(2): one atomic step that replaces a regular file (or a link
+    /// entry, without following it) and fails on a directory, deleting
+    /// nothing. On failure the temporary file is removed.
+    static func moveIntoPlace(_ temporary: URL, to output: URL) throws {
+        guard rename(temporary.path, output.path) != 0 else { return }
+        let code = errno
+        try? FileManager.default.removeItem(at: temporary)
+        if code == EISDIR || code == ENOTEMPTY || code == EEXIST || code == ENOTDIR {
+            throw FormFillError.outputNotAFile(path: output.path)
+        }
+        throw FormFillError.outputWriteFailed(output.path)
     }
 
     /// The output page size for `original` in `pageMode`, after the checks
@@ -129,6 +136,15 @@ public enum FormStamper {
     /// link, or nil when nothing is there.
     static func itemType(_ url: URL) -> FileAttributeType? {
         (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType
+    }
+
+    /// The name of the first of `protected` that `candidate` would replace,
+    /// by path (also for files that do not exist yet) or by file identity.
+    static func collision(of candidate: URL, with protected: [(URL, String)]) -> String? {
+        let path = candidate.resolvingSymlinksInPath().standardizedFileURL.path
+        return protected.first { url, _ in
+            url.resolvingSymlinksInPath().standardizedFileURL.path == path || sameFile(candidate, url)
+        }?.1
     }
 
     /// True when both paths name one existing file: after resolving symbolic

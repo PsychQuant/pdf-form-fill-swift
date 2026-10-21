@@ -28,6 +28,10 @@ public struct OverlayCompiler: Sendable {
     /// Prefix of the temporary directories this compiler creates.
     static let directoryPrefix = "pdf-form-fill-"
 
+    /// Directories created by `compile` and not yet discarded. Ownership is
+    /// recorded here, never inferred from a name.
+    private static let owned = OwnedDirectories()
+
     /// Directories searched after PATH; GUI-launched processes and test
     /// runners often do not have the TeX bin directory on PATH.
     static let fallbackDirectories = ["/Library/TeX/texbin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
@@ -67,34 +71,42 @@ public struct OverlayCompiler: Sendable {
         let tex = tex.resolvingSymlinksInPath()
         let output = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(Self.directoryPrefix)\(UUID().uuidString)", isDirectory: true)
+        // The contents, not the item: a relative link would dangle there.
+        let contents: Data
         do {
-            try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
-            // The contents, not the item: a relative link would dangle there.
-            try Data(contentsOf: tex).write(to: output.appendingPathComponent("overlay.tex"))
+            contents = try Data(contentsOf: tex)
         } catch {
-            try? FileManager.default.removeItem(at: output)
+            throw FormFillError.unreadableSource(tex.path)
+        }
+        do {
+            // Private: the copied source holds the typed text.
+            try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            Self.owned.insert(output)
+            try contents.write(to: output.appendingPathComponent("overlay.tex"))
+        } catch {
+            Self.remove(output)
             throw FormFillError.outputWriteFailed(output.path)
         }
         do {
             return try run(executable, in: output, source: tex, pageSize: pageSize, timeout: timeout)
         } catch {
-            try? FileManager.default.removeItem(at: output)
+            Self.remove(output)
             throw error
         }
     }
 
-    /// Removes the temporary directory of an overlay returned by `compile`.
-    /// Only a directory this compiler creates is removed: one whose name
-    /// starts with the prefix, directly inside the temporary directory, and
-    /// holding the copied `overlay.tex`. Anything else is left alone.
+    /// Removes the temporary directory of an overlay returned by `compile`
+    /// in this process. Any other directory is left alone, whatever its name.
     public static func discard(_ overlay: URL) {
-        let directory = overlay.deletingLastPathComponent().resolvingSymlinksInPath()
-        let temporary = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
-        guard directory.lastPathComponent.hasPrefix(directoryPrefix),
-              directory.deletingLastPathComponent().standardizedFileURL.path == temporary.standardizedFileURL.path,
-              FileManager.default.fileExists(atPath: directory.appendingPathComponent("overlay.tex").path)
-        else { return }
+        let directory = overlay.deletingLastPathComponent()
+        guard owned.contains(directory) else { return }
+        remove(directory)
+    }
+
+    private static func remove(_ directory: URL) {
         try? FileManager.default.removeItem(at: directory)
+        owned.remove(directory)
     }
 
     private func run(_ executable: URL, in output: URL, source tex: URL, pageSize: CGSize, timeout: Double) throws -> URL {
@@ -144,21 +156,38 @@ public struct OverlayCompiler: Sendable {
         return pdf
     }
 
-    /// Stops the engine and the helpers it started (xdvipdfmx and the like):
-    /// children first, so none is left behind, then the engine itself.
+    /// Stops the engine and every process it started, at any depth
+    /// (xdvipdfmx and the like). The tree is frozen first so nothing new is
+    /// spawned while it is walked, then killed from the leaves up.
     private static func stop(_ process: Process) {
         let pid = process.processIdentifier
-        let killChildren = Process()
-        killChildren.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        killChildren.arguments = ["-KILL", "-P", String(pid)]
-        killChildren.standardOutput = FileHandle.nullDevice
-        killChildren.standardError = FileHandle.nullDevice
-        if (try? killChildren.run()) != nil { killChildren.waitUntilExit() }
-        process.terminate()
-        let deadline = Date().addingTimeInterval(5)
-        while process.isRunning && Date() < deadline { usleep(50_000) }
-        if process.isRunning { kill(pid, SIGKILL) }
+        kill(pid, SIGSTOP)
+        var tree: [pid_t] = []
+        var frontier = [pid]
+        while let parent = frontier.popLast() {
+            for child in children(of: parent) where !tree.contains(child) {
+                kill(child, SIGSTOP)
+                tree.append(child)
+                frontier.append(child)
+            }
+        }
+        for child in tree.reversed() { kill(child, SIGKILL) }
+        kill(pid, SIGKILL)
         process.waitUntilExit()
+    }
+
+    /// Direct children of `pid`, from pgrep.
+    private static func children(of pid: pid_t) -> [pid_t] {
+        let pgrep = Process()
+        pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        pgrep.arguments = ["-P", String(pid)]
+        let pipe = Pipe()
+        pgrep.standardOutput = pipe
+        pgrep.standardError = FileHandle.nullDevice
+        guard (try? pgrep.run()) != nil else { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        pgrep.waitUntilExit()
+        return String(decoding: data, as: UTF8.self).split(separator: "\n").compactMap { pid_t($0) }
     }
 
     /// The last lines of a log, or a note that there is none.
@@ -168,4 +197,16 @@ public struct OverlayCompiler: Sendable {
         let text = String(decoding: data, as: UTF8.self)
         return text.split(separator: "\n", omittingEmptySubsequences: false).suffix(lines).joined(separator: "\n")
     }
+}
+
+/// A thread-safe set of directory paths.
+final class OwnedDirectories: @unchecked Sendable {
+    private let lock = NSLock()
+    private var paths = Set<String>()
+
+    private func key(_ url: URL) -> String { url.standardizedFileURL.path }
+
+    func insert(_ url: URL) { lock.withLock { _ = paths.insert(key(url)) } }
+    func remove(_ url: URL) { lock.withLock { _ = paths.remove(key(url)) } }
+    func contains(_ url: URL) -> Bool { lock.withLock { paths.contains(key(url)) } }
 }

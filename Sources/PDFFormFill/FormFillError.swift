@@ -25,6 +25,8 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
     case unsafeBlankFormPath(String)
     case outputIsInput(path: String, role: String)
     case outputNotAFile(path: String)
+    case diffArtifactCollides(path: String, role: String)
+    case unreadableSource(String)
     case outputWriteFailed(String)
 
     public var description: String {
@@ -72,9 +74,13 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
             return "blank form not found: \(path)"
         case .unsafeBlankFormPath(let path):
             return "the blank form's path contains a character TeX would misread (\\ { } % # ^ or a control character): "
-                + "\(path.debugDescription); rename the file"
+                + "\(path.debugDescription); rename the file or the folder that contains it"
         case let .outputIsInput(path, role):
             return "refusing to write the output over the \(role): \(path); choose another output path"
+        case let .diffArtifactCollides(path, role):
+            return "the diff artifact \(path) would replace the \(role); choose another diff directory"
+        case .unreadableSource(let path):
+            return "cannot read the .tex: \(path)"
         case .outputNotAFile(let path):
             return "the output exists and is not a regular file (a directory or a symbolic link): \(path); "
                 + "give the path of a PDF file to write"
