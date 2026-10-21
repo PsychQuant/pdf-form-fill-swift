@@ -2,18 +2,21 @@ import CoreGraphics
 import Foundation
 
 /// Where a page draws, read from its content stream and the form XObjects
-/// it uses, without rendering: path points, text origins and image corners
-/// in default user space. A render only shows what falls near the page, so
-/// this is how drawing placed far away is found.
+/// it uses, without rendering: the points of painted paths, the origin of
+/// every shown string (following TJ displacements), and the corners of
+/// images, in default user space. A render only shows what falls on the
+/// page, so this is how drawing placed off it, at any distance, is found.
 enum ContentExtent {
 
-    /// Drawing positions more than one page width or height beyond the
-    /// page's crop box. Content closer than that is left to a render.
-    static func positionsFarOutside(page: CGPDFPage) -> Int {
-        let box = page.getBoxRect(.cropBox)
-        let state = ScanState(reach: box.insetBy(dx: -box.width, dy: -box.height))
+    /// Drawing positions outside the page's crop box (its edges count as
+    /// inside), plus one for every form XObject that could not be scanned
+    /// (a cycle, nesting deeper than 16 or more than 2000 forms in all):
+    /// what cannot be checked never counts as on the page.
+    static func positionsOutside(page: CGPDFPage) -> Int {
+        let state = ScanState(box: page.getBoxRect(.cropBox))
         let stream = CGPDFContentStreamCreateWithPage(page)
-        state.scan(stream, ctm: .identity)
+        defer { CGPDFContentStreamRelease(stream) }
+        state.scan(stream, ctm: .identity, form: nil)
         return state.outside
     }
 }
@@ -21,26 +24,37 @@ enum ContentExtent {
 /// Graphics and text state while scanning; reached from the C callbacks
 /// through the scanner's info pointer.
 final class ScanState {
-    let reach: CGRect
+    static let maxDepth = 16
+    static let maxForms = 2000
+
+    let box: CGRect
     var outside = 0
     var ctm = CGAffineTransform.identity
     var saved: [CGAffineTransform] = []
     var textMatrix = CGAffineTransform.identity
     var lineMatrix = CGAffineTransform.identity
     var leading: CGFloat = 0
-    var depth = 0
+    var fontSize: CGFloat = 0
+    var horizontalScale: CGFloat = 1
+    /// Points of the path being built, marked only when it is painted.
+    var pending: [CGPoint] = []
+    /// Form XObjects on the current nesting path, to stop cycles.
+    var path: [CGPDFStreamRef] = []
+    var formsScanned = 0
 
-    init(reach: CGRect) {
-        self.reach = reach
+    init(box: CGRect) {
+        self.box = box
     }
 
-    func mark(_ point: CGPoint, _ transform: CGAffineTransform) {
-        let p = point.applying(transform)
-        if !p.x.isFinite || !p.y.isFinite || !reach.contains(p) { outside += 1 }
+    func mark(_ point: CGPoint) {
+        let p = point.applying(ctm)
+        let inside = p.x.isFinite && p.y.isFinite
+            && p.x >= box.minX && p.x <= box.maxX && p.y >= box.minY && p.y <= box.maxY
+        if !inside { outside += 1 }
     }
 
     func markTextOrigin() {
-        mark(.zero, textMatrix.concatenating(ctm))
+        mark(CGPoint.zero.applying(textMatrix))
     }
 
     func moveLine(_ tx: CGFloat, _ ty: CGFloat) {
@@ -48,18 +62,46 @@ final class ScanState {
         textMatrix = lineMatrix
     }
 
+    /// A TJ number moves the next glyph left by number/1000 of the font size.
+    func displace(_ amount: CGFloat) {
+        textMatrix = CGAffineTransform(translationX: -amount / 1000 * fontSize * horizontalScale, y: 0)
+            .concatenating(textMatrix)
+    }
+
+    func addPoint(_ x: CGFloat, _ y: CGFloat) {
+        pending.append(CGPoint(x: x, y: y).applying(ctm))
+    }
+
+    func paint() {
+        for p in pending {
+            let inside = p.x.isFinite && p.y.isFinite
+                && p.x >= box.minX && p.x <= box.maxX && p.y >= box.minY && p.y <= box.maxY
+            if !inside { outside += 1 }
+        }
+        pending = []
+    }
+
     /// Scans `stream` with the current transformation matrix set to `ctm`.
-    func scan(_ stream: CGPDFContentStreamRef, ctm start: CGAffineTransform) {
-        guard depth < 16, let table = Self.table else { return }
-        depth += 1
-        defer { depth -= 1 }
-        let outer = (ctm, saved, textMatrix, lineMatrix)
+    /// `form` is the XObject being entered, if any.
+    func scan(_ stream: CGPDFContentStreamRef, ctm start: CGAffineTransform, form: CGPDFStreamRef?) {
+        if let form {
+            guard path.count < Self.maxDepth, formsScanned < Self.maxForms, !path.contains(form) else {
+                outside += 1
+                return
+            }
+            formsScanned += 1
+            path.append(form)
+        }
+        defer { if form != nil { path.removeLast() } }
+        guard let table = Self.table else { return }
+        let outer = (ctm, saved, textMatrix, lineMatrix, pending)
         ctm = start
         saved = []
+        pending = []
         let scanner = CGPDFScannerCreate(stream, table, Unmanaged.passUnretained(self).toOpaque())
         CGPDFScannerScan(scanner)
         CGPDFScannerRelease(scanner)
-        (ctm, saved, textMatrix, lineMatrix) = outer
+        (ctm, saved, textMatrix, lineMatrix, pending) = outer
     }
 
     static func state(_ info: UnsafeMutableRawPointer?) -> ScanState? {
@@ -100,6 +142,14 @@ final class ScanState {
             s.textMatrix = .identity
             s.lineMatrix = .identity
         }
+        CGPDFOperatorTableSetCallback(table, "Tf") { scanner, info in
+            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 1) else { return }
+            s.fontSize = v[0]
+        }
+        CGPDFOperatorTableSetCallback(table, "Tz") { scanner, info in
+            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 1) else { return }
+            s.horizontalScale = v[0] / 100
+        }
         CGPDFOperatorTableSetCallback(table, "Tm") { scanner, info in
             guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 6) else { return }
             s.lineMatrix = ScanState.matrix(v)
@@ -122,9 +172,23 @@ final class ScanState {
             guard let s = ScanState.state(info) else { return }
             s.moveLine(0, -s.leading)
         }
-        for op in ["Tj", "TJ"] {
-            CGPDFOperatorTableSetCallback(table, op) { _, info in
-                ScanState.state(info)?.markTextOrigin()
+        CGPDFOperatorTableSetCallback(table, "Tj") { _, info in
+            ScanState.state(info)?.markTextOrigin()
+        }
+        CGPDFOperatorTableSetCallback(table, "TJ") { scanner, info in
+            guard let s = ScanState.state(info) else { return }
+            var array: CGPDFArrayRef?
+            guard CGPDFScannerPopArray(scanner, &array), let array else {
+                s.markTextOrigin()
+                return
+            }
+            for i in 0..<CGPDFArrayGetCount(array) {
+                var number: CGPDFReal = 0
+                if CGPDFArrayGetNumber(array, i, &number) {
+                    s.displace(number)
+                } else {
+                    s.markTextOrigin()
+                }
             }
         }
         for op in ["'", "\""] {
@@ -134,32 +198,43 @@ final class ScanState {
                 s.markTextOrigin()
             }
         }
-        for (op, count) in [("m", 2), ("l", 2), ("c", 6), ("v", 4), ("y", 4)] {
-            let callback: CGPDFOperatorCallback
-            switch count {
-            case 6:
-                callback = { scanner, info in
-                    guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 6) else { return }
-                    for i in stride(from: 0, to: 6, by: 2) { s.mark(CGPoint(x: v[i], y: v[i + 1]), s.ctm) }
-                }
-            case 4:
-                callback = { scanner, info in
-                    guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 4) else { return }
-                    for i in stride(from: 0, to: 4, by: 2) { s.mark(CGPoint(x: v[i], y: v[i + 1]), s.ctm) }
-                }
-            default:
-                callback = { scanner, info in
-                    guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 2) else { return }
-                    s.mark(CGPoint(x: v[0], y: v[1]), s.ctm)
-                }
+        CGPDFOperatorTableSetCallback(table, "m") { scanner, info in
+            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 2) else { return }
+            s.addPoint(v[0], v[1])
+        }
+        CGPDFOperatorTableSetCallback(table, "l") { scanner, info in
+            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 2) else { return }
+            s.addPoint(v[0], v[1])
+        }
+        CGPDFOperatorTableSetCallback(table, "c") { scanner, info in
+            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 6) else { return }
+            for i in stride(from: 0, to: 6, by: 2) { s.addPoint(v[i], v[i + 1]) }
+        }
+        for op in ["v", "y"] {
+            CGPDFOperatorTableSetCallback(table, op) { scanner, info in
+                guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 4) else { return }
+                for i in stride(from: 0, to: 4, by: 2) { s.addPoint(v[i], v[i + 1]) }
             }
-            CGPDFOperatorTableSetCallback(table, op, callback)
         }
         CGPDFOperatorTableSetCallback(table, "re") { scanner, info in
             guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 4) else { return }
             for (dx, dy) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
-                s.mark(CGPoint(x: v[0] + dx * v[2], y: v[1] + dy * v[3]), s.ctm)
+                s.addPoint(v[0] + dx * v[2], v[1] + dy * v[3])
             }
+        }
+        // Painting operators mark the path; `n` ends it unpainted (a clip).
+        for op in ["S", "s", "f", "F", "f*", "B", "B*", "b", "b*"] {
+            CGPDFOperatorTableSetCallback(table, op) { _, info in
+                ScanState.state(info)?.paint()
+            }
+        }
+        CGPDFOperatorTableSetCallback(table, "n") { _, info in
+            ScanState.state(info)?.pending = []
+        }
+        // An inline image fills the unit square of the current matrix.
+        CGPDFOperatorTableSetCallback(table, "EI") { _, info in
+            guard let s = ScanState.state(info) else { return }
+            for (x, y) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] { s.mark(CGPoint(x: x, y: y)) }
         }
         CGPDFOperatorTableSetCallback(table, "Do") { scanner, info in
             guard let s = ScanState.state(info) else { return }
@@ -172,28 +247,29 @@ final class ScanState {
                   let dictionary = CGPDFStreamGetDictionary(xobject) else { return }
             var subtype: UnsafePointer<CChar>?
             CGPDFDictionaryGetName(dictionary, "Subtype", &subtype)
-            if let subtype, String(cString: subtype) == "Form" {
-                var form = CGAffineTransform.identity
-                var array: CGPDFArrayRef?
-                if CGPDFDictionaryGetArray(dictionary, "Matrix", &array), let array, CGPDFArrayGetCount(array) == 6 {
-                    var v = [CGFloat](repeating: 0, count: 6)
-                    for i in 0..<6 {
-                        var value: CGPDFReal = 0
-                        CGPDFArrayGetNumber(array, i, &value)
-                        v[i] = value
-                    }
-                    form = ScanState.matrix(v)
-                }
-                var resources: CGPDFDictionaryRef?
-                CGPDFDictionaryGetDictionary(dictionary, "Resources", &resources)
-                // A form without its own resources is still scanned; lookups in it simply find nothing.
-                let stream = CGPDFContentStreamCreateWithStream(xobject, resources ?? dictionary,
-                                                                CGPDFScannerGetContentStream(scanner))
-                s.scan(stream, ctm: form.concatenating(s.ctm))
-            } else {
+            guard let subtype, String(cString: subtype) == "Form" else {
                 // An image fills the unit square of the current matrix.
-                for (x, y) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] { s.mark(CGPoint(x: x, y: y), s.ctm) }
+                for (x, y) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] { s.mark(CGPoint(x: x, y: y)) }
+                return
             }
+            var form = CGAffineTransform.identity
+            var array: CGPDFArrayRef?
+            if CGPDFDictionaryGetArray(dictionary, "Matrix", &array), let array, CGPDFArrayGetCount(array) == 6 {
+                var v = [CGFloat](repeating: 0, count: 6)
+                for i in 0..<6 {
+                    var value: CGPDFReal = 0
+                    CGPDFArrayGetNumber(array, i, &value)
+                    v[i] = value
+                }
+                form = ScanState.matrix(v)
+            }
+            var resources: CGPDFDictionaryRef?
+            CGPDFDictionaryGetDictionary(dictionary, "Resources", &resources)
+            // A form without its own resources is still scanned; lookups in it simply find nothing.
+            let stream = CGPDFContentStreamCreateWithStream(xobject, resources ?? dictionary,
+                                                            CGPDFScannerGetContentStream(scanner))
+            defer { CGPDFContentStreamRelease(stream) }
+            s.scan(stream, ctm: form.concatenating(s.ctm), form: xobject)
         }
         return table
     }()

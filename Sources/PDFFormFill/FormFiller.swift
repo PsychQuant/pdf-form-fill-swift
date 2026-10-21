@@ -41,10 +41,10 @@ public enum FormFiller {
         // overlay checks would never see typed text that was cut off.
         let offPage = try PageGeometry.inkOutsideCropBox(page: PageRaster.page(url: overlay, index: 0))
         guard offPage == 0 else { throw FormFillError.overlayInkOffPage(pixels: offPage) }
-        // The render reaches one page beyond each edge; drawing placed
-        // farther away is found from the content stream, wherever it is.
-        let farAway = try ContentExtent.positionsFarOutside(page: PageRaster.page(url: overlay, index: 0))
-        guard farAway == 0 else { throw FormFillError.overlayTextOffPage(characters: farAway) }
+        // The render finds glyphs that cross the page edge; the content
+        // stream finds drawing that starts off the page, at any distance.
+        let outside = try ContentExtent.positionsOutside(page: PageRaster.page(url: overlay, index: 0))
+        guard outside == 0 else { throw FormFillError.overlayTextOffPage(characters: outside) }
         try FormStamper.stamp(original: original, overlay: overlay, pageMode: pageMode, output: output)
 
         let verification = try OverlayVerifier.verify(

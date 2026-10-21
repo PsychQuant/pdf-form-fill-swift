@@ -70,8 +70,8 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
             return "the overlay has \(pixels) inked pixel\(pixels == 1 ? "" : "s") outside its page, so typed text "
                 + "runs past the page edge and would be cut off; move or shorten it"
         case .overlayTextOffPage(let characters):
-            return "the overlay draws at \(characters) position\(characters == 1 ? "" : "s") more than a page beyond its edge, "
-                + "where no render shows it; check the field coordinates"
+            return "the overlay draws at \(characters) position\(characters == 1 ? "" : "s") off its page "
+                + "(or uses forms that cannot be checked), where no render shows it; check the field coordinates"
         case .blankFormMacroMissing(let path):
             return "no \\newcommand{\\BlankForm}{…} (or \\def\\BlankForm{…}) in \(path)"
         case .blankFormNotFound(let path):

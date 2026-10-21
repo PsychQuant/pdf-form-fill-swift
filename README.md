@@ -55,9 +55,12 @@ output. Before stamping, originals that cannot be carried over faithfully are
 refused: more than one page, a rotated page, or annotations (links, form
 fields, comments), whose appearances a redraw drops and a render of the
 original does not show. After compiling, an overlay that draws outside its page
-is refused, because no render shows that part: ink within one page of the edge
-is found pixel by pixel, and drawing placed farther away is found by reading
-the overlay's content stream, at any distance.
+is refused, because no render shows that part: glyphs that start on the page
+and cross its edge are found pixel by pixel, and drawing that starts off the
+page (points of painted paths, text origins including `TJ` displacements,
+image corners) is found by reading the overlay's content stream, at any
+distance. Form XObjects that cannot be read to the end (a cycle, nesting
+deeper than 16, more than 2000 forms) count as off the page.
 
 ## Page size
 
