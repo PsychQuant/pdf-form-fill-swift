@@ -81,6 +81,7 @@ struct Round4FixTests {
     @Test("control characters in label text are replaced in the skeleton")
     func labelControlCharacters() {
         #expect(FormSkeleton.printable("a\u{1b}[31mb\u{7}") == "a?[31mb?")
+        #expect(FormSkeleton.printable("a\u{2028}b\u{2029}c\u{85}d") == "a?b?c?d")
     }
 }
 

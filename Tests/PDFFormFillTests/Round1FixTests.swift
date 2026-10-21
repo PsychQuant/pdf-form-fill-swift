@@ -172,7 +172,7 @@ struct Round1FixTests {
     }
 
     @Test("a blank-form path that TeX would misread is refused",
-          arguments: ["a%b.pdf", "a#b.pdf", "a{b.pdf", "a}b.pdf", "a\\b.pdf", "a^^2fb.pdf", "a\nb.pdf"])
+          arguments: ["a%b.pdf", "a#b.pdf", "a{b.pdf", "a}b.pdf", "a\\b.pdf", "a^^2fb.pdf", "a\nb.pdf", "a\u{2028}b.pdf"])
     func unsafeReference(name: String) throws {
         #expect(throws: FormFillError.unsafeBlankFormPath(name)) {
             try FormSkeleton.generate(blankForm: FormSkeletonTests.blankForm(), reference: name)
