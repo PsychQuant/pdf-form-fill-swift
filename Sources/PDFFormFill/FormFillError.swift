@@ -21,6 +21,9 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
     case rotatedOverlay(degrees: Int)
     case overlayInkOffPage(pixels: Int)
     case overlayTextOffPage(characters: Int)
+    /// Parts of the overlay whose position cannot be determined.
+    case overlayUnverifiable(parts: Int)
+    case annotatedOverlay(count: Int)
     case blankFormMacroMissing(String)
     case blankFormNotFound(String)
     case unsafeBlankFormPath(String)
@@ -70,8 +73,15 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
             return "the overlay has \(pixels) inked pixel\(pixels == 1 ? "" : "s") outside its page, so typed text "
                 + "runs past the page edge and would be cut off; move or shorten it"
         case .overlayTextOffPage(let characters):
-            return "the overlay draws at \(characters) position\(characters == 1 ? "" : "s") off its page "
-                + "(or uses forms that cannot be checked), where no render shows it; check the field coordinates"
+            return "the overlay draws at \(characters) position\(characters == 1 ? "" : "s") more than half a page "
+                + "off its page, where no render shows it; check the field coordinates"
+        case .overlayUnverifiable(let parts):
+            return "\(parts) part\(parts == 1 ? "" : "s") of the overlay cannot be placed to check for drawing off "
+                + "the page (text in a font without width data, a form XObject that cannot be read to the end, "
+                + "or a content stream that cannot be parsed); simplify the overlay"
+        case .annotatedOverlay(let count):
+            return "the overlay carries \(count) annotation\(count == 1 ? "" : "s") (links or form fields); "
+                + "stamping redraws only the page content, so they would be lost; remove them from the .tex"
         case .blankFormMacroMissing(let path):
             return "no \\newcommand{\\BlankForm}{…} (or \\def\\BlankForm{…}) in \(path)"
         case .blankFormNotFound(let path):

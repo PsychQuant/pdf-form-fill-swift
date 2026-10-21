@@ -88,15 +88,16 @@ struct Round4FixTests {
 /// The content-stream scan behind the far-off-page refusal.
 struct ContentExtentTests {
 
-    @Test("drawing off the page is found from the content stream", arguments: [
+    @Test("drawing more than half a page off is found from the content stream", arguments: [
         ([SyntheticPDF.Item.text("2026", at: CGPoint(x: 3000, y: 78), size: 10, font: "Helvetica")], true),
         ([SyntheticPDF.Item.fill(CGRect(x: 100, y: -2000, width: 5, height: 5))], true),
         ([SyntheticPDF.Item.text("2026", at: CGPoint(x: 100, y: 78), size: 10, font: "Helvetica")], false),
-        ([SyntheticPDF.Item.fill(CGRect(x: 650, y: 100, width: 5, height: 5))], true),
+        ([SyntheticPDF.Item.fill(CGRect(x: 650, y: 100, width: 5, height: 5))], false),
+        ([SyntheticPDF.Item.fill(CGRect(x: 1000, y: 100, width: 5, height: 5))], true),
         ([SyntheticPDF.Item.fill(CGRect(x: 500, y: 100, width: 5, height: 5))], false),
     ])
     func farDrawing(items: [SyntheticPDF.Item], far: Bool) throws {
         let page = try PageRaster.page(url: SyntheticPDF.make(size: SyntheticPDF.a4, items), index: 0)
-        #expect((ContentExtent.positionsOutside(page: page) > 0) == far)
+        #expect((ContentExtent.scan(page: page).outside > 0) == far)
     }
 }

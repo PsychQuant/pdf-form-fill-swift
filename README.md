@@ -44,7 +44,7 @@ file itself.
 `\at{x}{y}{size}{text}` places one line with the left end of its baseline at
 (x, y). `\atbox{x}{y}{width}{size}{text}` does the same for a field of several
 lines, wrapping within `width` bp. The skeleton refuses a blank-form path
-containing `\ { } % # ^` or a control character, which TeX would misread.
+containing `\ { } % # ^`, a control character or a line or paragraph separator, which TeX would misread.
 
 ## What is checked
 
@@ -55,12 +55,21 @@ output. Before stamping, originals that cannot be carried over faithfully are
 refused: more than one page, a rotated page, or annotations (links, form
 fields, comments), whose appearances a redraw drops and a render of the
 original does not show. After compiling, an overlay that draws outside its page
-is refused, because no render shows that part: glyphs that start on the page
-and cross its edge are found pixel by pixel, and drawing that starts off the
-page (points of painted paths, text origins including `TJ` displacements,
-image corners) is found by reading the overlay's content stream, at any
-distance. Form XObjects that cannot be read to the end (a cycle, nesting
-deeper than 16, more than 2000 forms) count as off the page.
+is refused, because no render shows that part. Two checks share the work:
+ink up to one page beyond each edge is found pixel by pixel, and drawing
+farther out is found by reading the overlay's content stream. The stream
+check places every glyph by following the font's widths and the text state
+(`Tc`, `Tw`, `Tz`, `Ts`, `TJ` displacements, `q`/`Q`, form XObjects), and
+reports an em box around a glyph, a point of a painted path, an image corner
+or a shading that lies more than half a page beyond the page, unless a clip
+keeps it within that reach. It is conservative: curve control points count,
+and a clip is taken as its bounding box. An overlay whose drawing cannot be
+placed is refused as unverifiable: text in a font without width data (only
+`/Widths` fonts and Identity-H/V CID fonts are read), a form XObject that
+cannot be read to the end (a cycle, nesting deeper than 16, more than 2000
+distinct forms or 100000 form invocations), an XObject name that does not
+resolve, or a content stream that fails to parse. An overlay with
+annotations (links, form fields) is refused too, since stamping drops them.
 
 ## Page size
 

@@ -12,22 +12,28 @@ struct Round5FixTests {
     /// operators CoreGraphics never emits. `xobject` adds a form XObject /X0
     /// with its own content stream and, when `selfReferencing`, a resource
     /// entry pointing back at itself.
-    static func handMadePDF(content: String, xobject: String? = nil, selfReferencing: Bool = false) throws -> URL {
+    /// /F1 has a width of 500 (6 bp at 12 bp) for every printable ASCII
+    /// code; /F2 has no width data. `annotated` adds a link annotation.
+    static func handMadePDF(content: String, xobject: String? = nil, selfReferencing: Bool = false,
+                            bbox: String = "-100000 -100000 100000 100000", annotated: Bool = false) throws -> URL {
         var objects: [String] = []
-        let font = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+        let widths = Array(repeating: "500", count: 95).joined(separator: " ")
+        let font = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 126 /Widths [\(widths)] >>"
         let xobjectResource = xobject == nil ? "" : " /XObject << /X0 5 0 R >>"
         objects.append("<< /Type /Catalog /Pages 2 0 R >>")
         objects.append("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+        let annots = annotated ? " /Annots [<< /Type /Annot /Subtype /Link /Rect [10 10 50 50] >>]" : ""
         objects.append("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.2756 841.8898] /Contents 4 0 R "
-                       + "/Resources << /Font << /F1 6 0 R >>\(xobjectResource) >> >>")
+                       + "/Resources << /Font << /F1 6 0 R /F2 7 0 R >>\(xobjectResource) >>\(annots) >>")
         objects.append("<< /Length \(content.utf8.count) >>\nstream\n\(content)\nendstream")
         if let xobject {
             let inner = selfReferencing ? "/Resources << /XObject << /X0 5 0 R >> /Font << /F1 6 0 R >> >>" : "/Resources << /Font << /F1 6 0 R >> >>"
-            objects.append("<< /Type /XObject /Subtype /Form /BBox [-100000 -100000 100000 100000] \(inner) /Length \(xobject.utf8.count) >>\nstream\n\(xobject)\nendstream")
+            objects.append("<< /Type /XObject /Subtype /Form /BBox [\(bbox)] \(inner) /Length \(xobject.utf8.count) >>\nstream\n\(xobject)\nendstream")
         } else {
             objects.append("<< >>")
         }
         objects.append(font)
+        objects.append("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
         var pdf = "%PDF-1.4\n"
         var offsets: [Int] = []
         for (i, body) in objects.enumerated() {
@@ -43,8 +49,12 @@ struct Round5FixTests {
         return url
     }
 
+    static func scan(_ url: URL) throws -> ContentExtent.Result {
+        ContentExtent.scan(page: try PageRaster.page(url: url, index: 0))
+    }
+
     static func positionsOutside(_ url: URL) throws -> Int {
-        ContentExtent.positionsOutside(page: try PageRaster.page(url: url, index: 0))
+        try scan(url).outside
     }
 
     @Test("a TJ displacement that pushes text off the page is followed")
@@ -53,7 +63,7 @@ struct Round5FixTests {
         #expect(try Self.positionsOutside(url) > 0)
     }
 
-    @Test("text whose origin is just past the page edge is found")
+    @Test("text that starts two page widths to the right is found")
     func originJustPastEdge() throws {
         let url = try Self.handMadePDF(content: "BT /F1 12 Tf 1 0 0 1 1190 400 Tm (123) Tj ET")
         #expect(try Self.positionsOutside(url) > 0)
@@ -76,8 +86,8 @@ struct Round5FixTests {
         let url = try Self.handMadePDF(content: "/X0 Do", xobject: "/X0 Do /X0 Do BT /F1 12 Tf 1 0 0 1 100 400 Tm (A) Tj ET",
                                        selfReferencing: true)
         let start = Date()
-        let count = try Self.positionsOutside(url)
-        #expect(count > 0)
+        let result = try Self.scan(url)
+        #expect(result.undecidable > 0)
         #expect(Date().timeIntervalSince(start) < 5)
     }
 

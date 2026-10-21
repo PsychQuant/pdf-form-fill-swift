@@ -34,6 +34,9 @@ public enum FormStamper {
         let overlayPage = try singlePage(overlay, isOriginal: false)
         let overlayRotation = ((Int(overlayPage.rotationAngle) % 360) + 360) % 360
         guard overlayRotation == 0 else { throw FormFillError.rotatedOverlay(degrees: overlayRotation) }
+        // A redraw drops annotations, and no render shows that loss.
+        let overlayAnnotations = annotationCount(overlayPage)
+        guard overlayAnnotations == 0 else { throw FormFillError.annotatedOverlay(count: overlayAnnotations) }
         let overlayBox = overlayPage.getBoxRect(.cropBox)
         guard abs(overlayBox.width - target.width) <= PageGeometry.exactTolerance,
               abs(overlayBox.height - target.height) <= PageGeometry.exactTolerance else {
