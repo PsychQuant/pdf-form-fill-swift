@@ -33,7 +33,12 @@ public enum FormFiller {
         let protected = [(output, "output"), (original, "blank form"), (tex, ".tex source")]
         try refuseArtifactCollisions(diffDirectory, protected)
         let target = try FormStamper.targetSize(original: original, pageMode: pageMode)
-        let originalRaster = try PageRaster.render(url: original, pageIndex: 0, dpi: dpi)
+        // One bitmap height for every render compared below: anti-aliasing
+        // is not invariant under the height, and in page mode a4 the original
+        // and the output differ in height.
+        let originalPage = try PageRaster.page(url: original, index: 0)
+        let canvas = PageRaster.canvasHeight(heights: [originalPage.getBoxRect(.cropBox).height, target.height], dpi: dpi)
+        let originalRaster = try PageRaster.render(page: originalPage, dpi: dpi, canvasHeight: canvas)
 
         let overlay = try OverlayCompiler(engine: engine).compile(tex: tex, pageSize: target, timeout: timeout)
         defer { OverlayCompiler.discard(overlay) }
@@ -50,8 +55,8 @@ public enum FormFiller {
 
         let verification = try OverlayVerifier.verify(
             original: originalRaster,
-            output: PageRaster.render(url: output, pageIndex: 0, dpi: dpi),
-            overlay: PageRaster.render(url: overlay, pageIndex: 0, dpi: dpi))
+            output: PageRaster.render(url: output, pageIndex: 0, dpi: dpi, canvasHeight: canvas),
+            overlay: PageRaster.render(url: overlay, pageIndex: 0, dpi: dpi, canvasHeight: canvas))
         if let diffDirectory {
             // Checked again now that the output exists, by file identity too.
             try refuseArtifactCollisions(diffDirectory, protected)

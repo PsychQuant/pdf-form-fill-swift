@@ -67,4 +67,55 @@ struct Round10FixTests {
             try writer.set(number, Data(repeating: 0x20, count: 600))
         }
     }
+
+    @Test("a long string referred to from many keys is written once")
+    func sharedStringsDoNotMultiply() throws {
+        let keys = (0..<300).map { "/K\($0) 5 0 R" }.joined(separator: " ")
+        let long = "(" + String(repeating: "a", count: 64 * 1024) + ")"
+        let blank = try Round6FixTests.rawPDF([
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.2756 841.8898] /Contents 4 0 R "
+                + "/Resources << /Properties << /P << \(keys) >> >> >> >>",
+            Round6FixTests.stream("", "0 0 0 rg 100 100 20 20 re f"),
+            long,
+        ])
+        defer { try? FileManager.default.removeItem(at: blank) }
+        let start = Date()
+        let out = try Round9FixTests.stampAlone(blank)
+        let size = try FileManager.default.attributesOfItem(atPath: out.path)[.size] as? Int ?? 0
+        #expect(size < 1 << 20)
+        #expect(Date().timeIntervalSince(start) < 10)
+    }
+
+    @Test("page mode a4 compares on one canvas, so a faithful output of a taller page passes",
+          .enabled(if: xelatexAvailable, "xelatex not found"), arguments: [144.0, 200.0])
+    func oneCanvasForA4(dpi: Double) throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("curves-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let consumer = try #require(CGDataConsumer(url: url as CFURL))
+        var media = CGRect(x: 0, y: 0, width: 596, height: 843)
+        let context = try #require(CGContext(consumer: consumer, mediaBox: &media, nil))
+        context.beginPDFPage(nil)
+        context.setStrokeColor(CGColor(gray: 0.4, alpha: 1))
+        context.setLineWidth(0.37)
+        var seed: UInt64 = 7
+        func next() -> Double {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Double(seed >> 11) / Double(1 << 53)
+        }
+        for _ in 0..<300 {
+            let center = CGPoint(x: 80 + next() * 436, y: 80 + next() * 683)
+            let p = { CGPoint(x: center.x + next() * 40 - 20, y: center.y + next() * 40 - 20) }
+            context.move(to: p())
+            context.addCurve(to: p(), control1: p(), control2: p())
+        }
+        context.strokePath()
+        context.endPDFPage()
+        context.closePDF()
+        let tex = try StampFidelityTests.project(blank: url, typed: "")
+        let result = try FormFiller.fill(tex: tex, output: tex.deletingLastPathComponent().appendingPathComponent("out.pdf"),
+                                         pageMode: .a4, dpi: dpi)
+        #expect(result.passed, "\(result.report.checks.filter { $0.count > 0 })")
+    }
 }

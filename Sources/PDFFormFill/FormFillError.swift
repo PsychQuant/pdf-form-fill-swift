@@ -30,6 +30,8 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
     case unstampable(String)
     /// Characters the overlay's fonts lack; the engine left them out.
     case missingCharacters([String])
+    /// Text in the overlay picture outside any node; the engine leaves it out.
+    case textOutsideNodes([String])
     case blankFormMacroMissing(String)
     case blankFormNotFound(String)
     case unsafeBlankFormPath(String)
@@ -88,6 +90,9 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
                 + "the page (text in a font without width data, a form XObject that cannot be read to the end, "
                 + "an unresolvable resource, unreadable operands, or a content stream that cannot be parsed); "
                 + "simplify the overlay"
+        case .textOutsideNodes(let characters):
+            return "the overlay has text outside any node (\(characters.joined(separator: " "))), which is never "
+                + "printed; put it inside an \\at node or remove it (a doubled ; counts too)"
         case .missingCharacters(let characters):
             return "the overlay's fonts lack \(characters.joined(separator: " ")), which the engine left out; "
                 + "set a font that has them (for example with \\setCJKmainfont or a fallback font)"

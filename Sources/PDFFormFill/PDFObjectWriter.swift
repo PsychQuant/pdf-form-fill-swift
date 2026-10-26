@@ -18,6 +18,9 @@ struct PDFObjectWriter {
     /// Arrays written once inline; a second use makes them indirect, so a
     /// shared array is never expanded again (2^depth copies otherwise).
     private var arrays: [CGPDFArrayRef: (data: Data, number: Int?)] = [:]
+    /// Strings likewise: a long string referred to from many keys is
+    /// written once as an indirect object.
+    private var strings: [CGPDFStringRef: (data: Data, number: Int?)] = [:]
     private var depth = 0
     private var written = 0
     /// The byte budget for this copy (`maxBytes` unless a test lowers it).
@@ -86,7 +89,17 @@ struct PDFObjectWriter {
             guard CGPDFObjectGetValue(object, .string, &string), let string else {
                 throw Unsupported(reason: "unreadable string")
             }
-            return Self.hexString(string)
+            if let cached = strings[string] {
+                if let number = cached.number { return Self.reference(number) }
+                let number = reserve()
+                try set(number, cached.data)
+                strings[string] = (cached.data, number)
+                return Self.reference(number)
+            }
+            let data = Self.hexString(string)
+            try checkBudget(adding: data.count)
+            strings[string] = (data, nil)
+            return data
         case .array:
             var array: CGPDFArrayRef?
             guard CGPDFObjectGetValue(object, .array, &array), let array else { throw Unsupported(reason: "unreadable array") }
@@ -143,10 +156,14 @@ struct PDFObjectWriter {
             return true
         }, nil)
         var out: [(String, Data)] = []
+        var size = 0
         for (key, object) in objects.sorted(by: { $0.0.lexicographicallyPrecedes($1.0) }) {
             let text = String(decoding: key, as: UTF8.self)
             guard !Self.skippedKeys.contains(text), !skipping.contains(text) else { continue }
-            out.append((Self.nameKey(key), try value(object)))
+            let value = try value(object)
+            size += key.count + value.count
+            try checkBudget(adding: size)
+            out.append((Self.nameKey(key), value))
         }
         return out
     }

@@ -141,8 +141,9 @@ public struct OverlayCompiler: Sendable {
         }
         // A character the font lacks is dropped from the PDF with only a log
         // line, so no pixel check can see that it is missing.
-        let missing = Self.missingCharacters(in: log)
-        guard missing.isEmpty else { throw FormFillError.missingCharacters(missing) }
+        let dropped = Self.droppedCharacters(in: log)
+        guard dropped.stray.isEmpty else { throw FormFillError.textOutsideNodes(dropped.stray) }
+        guard dropped.missing.isEmpty else { throw FormFillError.missingCharacters(dropped.missing) }
         let pdf = output.appendingPathComponent("overlay.pdf")
         guard let document = CGPDFDocument(pdf as CFURL) else {
             throw FormFillError.compilationFailed(logTail: Self.tail(of: log))
@@ -160,26 +161,31 @@ public struct OverlayCompiler: Sendable {
         return pdf
     }
 
-    /// The characters the engine reported as missing from their fonts
-    /// ("Missing character: There is no X (U+…) in font …"), in order, once each.
-    static func missingCharacters(in log: URL) -> [String] {
-        guard let data = try? Data(contentsOf: log) else { return [] }
+    /// The characters the engine left out, from its log ("Missing character:
+    /// There is no X … in font F!"), in order, once each: `missing` are those
+    /// a font lacks; `stray` are those typeset in nullfont, which is text in
+    /// the picture outside any node. Either way the PDF does not have them,
+    /// and no pixel check can see what was never drawn.
+    static func droppedCharacters(in log: URL) -> (missing: [String], stray: [String]) {
+        guard let data = try? Data(contentsOf: log) else { return ([], []) }
         let text = String(decoding: data, as: UTF8.self)
-        var found: [String] = []
+        var missing: [String] = [], stray: [String] = []
         for line in text.split(separator: "\n") {
             guard let start = line.range(of: "Missing character: There is no ") else { continue }
-            // Text outside any node is typeset in nullfont and never shown;
-            // it is a stray token in the picture, not a character a font lacks.
-            guard !line.contains("in font nullfont") else { continue }
             let rest = line[start.upperBound...]
             guard let end = rest.range(of: " in font") else { continue }
             var character = String(rest[..<end.lowerBound])
             for marker in [" (U+", " (\""] {
                 if let code = character.range(of: marker) { character = String(character[..<code.lowerBound]) }
             }
-            if !character.isEmpty, !found.contains(character) { found.append(character) }
+            guard !character.isEmpty else { continue }
+            if line.contains("in font nullfont") {
+                if !stray.contains(character) { stray.append(character) }
+            } else if !missing.contains(character) {
+                missing.append(character)
+            }
         }
-        return found
+        return (missing, stray)
     }
 
     /// Stops the engine and the processes it started (xdvipdfmx and the

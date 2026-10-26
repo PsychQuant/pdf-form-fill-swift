@@ -58,8 +58,8 @@ struct Round9FixTests {
         #expect(Double(text) == value)
     }
 
-    @Test("stray text outside a node is not reported as a character a font lacks")
-    func nullfontIgnored() throws {
+    @Test("text outside a node is reported apart from characters a font lacks")
+    func nullfontSeparated() throws {
         let log = FileManager.default.temporaryDirectory.appendingPathComponent("r9-\(UUID().uuidString).log")
         try """
         Missing character: There is no ; ("3B) in font nullfont!
@@ -68,7 +68,9 @@ struct Round9FixTests {
         Missing character: There is no \u{2460} ("2460) in font lmroman10-regular!
         """.write(to: log, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: log) }
-        #expect(OverlayCompiler.missingCharacters(in: log) == ["\u{2A736}", "\u{2460}"])
+        let dropped = OverlayCompiler.droppedCharacters(in: log)
+        #expect(dropped.missing == ["\u{2A736}", "\u{2460}"])
+        #expect(dropped.stray == [";", "x"])
     }
 
     @Test("a width table with an entry that cannot be read leaves the font unplaceable")
@@ -114,5 +116,21 @@ struct Round9FixTests {
         #expect(throws: FormFillError.lockedPDF(url.path)) {
             try FormStamper.targetSize(original: url, pageMode: .a4)
         }
+    }
+
+    @Test("typed text left outside any node is refused instead of dropped",
+          .enabled(if: xelatexAvailable, "xelatex not found"))
+    func textOutsideNodeRefused() throws {
+        let tex = try Round6FixTests.cjkProject(typed: "\\at{40}{40}{12}{甲}; 乙丙")
+        let output = tex.deletingLastPathComponent().appendingPathComponent("out.pdf")
+        let error = #expect(throws: FormFillError.self) {
+            try FormFiller.fill(tex: tex, output: output)
+        }
+        guard case .textOutsideNodes(let characters)? = error else {
+            Issue.record("expected textOutsideNodes, got \(String(describing: error))")
+            return
+        }
+        #expect(characters.contains("乙"))
+        #expect(!FileManager.default.fileExists(atPath: output.path))
     }
 }
