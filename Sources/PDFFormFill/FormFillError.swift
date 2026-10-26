@@ -5,6 +5,8 @@ import Foundation
 public enum FormFillError: Error, Equatable, CustomStringConvertible {
     case unreadablePDF(String)
     case emptyPDF(String)
+    /// The PDF needs a password to be read.
+    case lockedPDF(String)
     case multiPageOriginal(pages: Int)
     case engineNotFound(String)
     /// The last lines of the engine's log; the log itself is deleted with the
@@ -41,6 +43,8 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
         switch self {
         case .unreadablePDF(let path):
             return "cannot open PDF: \(path)"
+        case .lockedPDF(let path):
+            return "the PDF needs a password to be read: \(path); remove the password first"
         case .emptyPDF(let path):
             return "PDF has no pages: \(path)"
         case .multiPageOriginal(let pages):

@@ -15,8 +15,15 @@ struct PDFObjectWriter {
     private var bodies: [Data?] = []
     private var dictionaries: [CGPDFDictionaryRef: Int] = [:]
     private var streams: [CGPDFStreamRef: Int] = [:]
+    /// Arrays written once inline; a second use makes them indirect, so a
+    /// shared array is never expanded again (2^depth copies otherwise).
+    private var arrays: [CGPDFArrayRef: (data: Data, number: Int?)] = [:]
     private var depth = 0
+    private var written = 0
     static let maxDepth = 64
+    /// Total bytes the copy may write: far beyond any form, and a stop for
+    /// files built to expand.
+    static let maxBytes = 256 << 20
 
     /// Keys never copied: /Parent would pull in the source's page tree.
     static let skippedKeys: Set<String> = ["Parent"]
@@ -28,6 +35,13 @@ struct PDFObjectWriter {
 
     mutating func set(_ number: Int, _ body: Data) {
         bodies[number - 1] = body
+        written += body.count
+    }
+
+    private func checkBudget(adding count: Int = 0) throws {
+        guard written + count <= Self.maxBytes else {
+            throw Unsupported(reason: "the copy would exceed \(Self.maxBytes >> 20) MB")
+        }
     }
 
     /// A new stream object with `entries` (already serialized) and `data`.
@@ -58,7 +72,7 @@ struct PDFObjectWriter {
         case .name:
             var name: UnsafePointer<CChar>?
             guard CGPDFObjectGetValue(object, .name, &name), let name else { throw Unsupported(reason: "unreadable name") }
-            return Data(Self.name(String(cString: name)).utf8)
+            return Self.name(bytes: Self.bytes(name))
         case .string:
             var string: CGPDFStringRef?
             guard CGPDFObjectGetValue(object, .string, &string), let string else {
@@ -85,6 +99,20 @@ struct PDFObjectWriter {
     }
 
     mutating func array(_ array: CGPDFArrayRef) throws -> Data {
+        if let cached = arrays[array] {
+            if let number = cached.number { return Self.reference(number) }
+            let number = reserve()
+            set(number, cached.data)
+            try checkBudget()
+            arrays[array] = (cached.data, number)
+            return Self.reference(number)
+        }
+        let data = try inlineArray(array)
+        arrays[array] = (data, nil)
+        return data
+    }
+
+    private mutating func inlineArray(_ array: CGPDFArrayRef) throws -> Data {
         try descend()
         defer { depth -= 1 }
         var out = Data("[".utf8)
@@ -93,22 +121,25 @@ struct PDFObjectWriter {
             guard CGPDFArrayGetObject(array, i, &object), let object else { throw Unsupported(reason: "unreadable array entry") }
             if i > 0 { out.append(Data(" ".utf8)) }
             out.append(try value(object))
+            try checkBudget(adding: out.count)
         }
         out.append(Data("]".utf8))
         return out
     }
 
-    /// The entries of `dictionary`, serialized, in key order.
+    /// The entries of `dictionary`, serialized, in key order. Keys keep
+    /// their bytes; the String is for comparison only.
     mutating func entries(of dictionary: CGPDFDictionaryRef, skipping: Set<String> = []) throws -> [(String, Data)] {
-        var objects: [(String, CGPDFObjectRef)] = []
+        var objects: [([UInt8], CGPDFObjectRef)] = []
         CGPDFDictionaryApplyBlock(dictionary, { key, object, _ in
-            objects.append((String(cString: key), object))
+            objects.append((Self.bytes(key), object))
             return true
         }, nil)
         var out: [(String, Data)] = []
-        for (key, object) in objects.sorted(by: { $0.0 < $1.0 })
-        where !Self.skippedKeys.contains(key) && !skipping.contains(key) {
-            out.append((key, try value(object)))
+        for (key, object) in objects.sorted(by: { $0.0.lexicographicallyPrecedes($1.0) }) {
+            let text = String(decoding: key, as: UTF8.self)
+            guard !Self.skippedKeys.contains(text), !skipping.contains(text) else { continue }
+            out.append((Self.nameKey(key), try value(object)))
         }
         return out
     }
@@ -154,6 +185,7 @@ struct PDFObjectWriter {
         @unknown default:
             throw Unsupported(reason: "unknown stream format")
         }
+        try checkBudget(adding: data.count)
         set(number, Self.streamBody(entries: entries, data: data))
         return number
     }
@@ -217,10 +249,18 @@ struct PDFObjectWriter {
         Data("\(number) 0 R".utf8)
     }
 
+    /// Keys from `entries(of:)` are already escaped names (marked by a
+    /// leading NUL); other keys are plain ASCII written here.
     static func dictionaryBody(_ entries: [(String, Data)]) -> Data {
         var out = Data("<<".utf8)
         for (key, value) in entries {
-            out.append(Data(" \(name(key)) ".utf8))
+            out.append(Data(" ".utf8))
+            if key.hasPrefix("\u{0}") {
+                out.append(Data(key.dropFirst().utf8))
+            } else {
+                out.append(name(bytes: Array(key.utf8)))
+            }
+            out.append(Data(" ".utf8))
             out.append(value)
         }
         out.append(Data(" >>".utf8))
@@ -235,27 +275,65 @@ struct PDFObjectWriter {
         return out
     }
 
-    /// A number in plain decimal notation that reads back as the same value.
+    /// A number in plain decimal notation that reads back as the same value:
+    /// the shortest round-trip digits, with any exponent written out.
     static func number(_ value: CGFloat) throws -> String {
         guard value.isFinite else { throw Unsupported(reason: "non-finite number") }
-        if value == value.rounded(), abs(value) < 1e15 { return String(Int64(value)) }
-        var text = String(format: "%.17f", Double(value))
-        while text.hasSuffix("0") { text.removeLast() }
-        if text.hasSuffix(".") { text.removeLast() }
-        return text == "-0" ? "0" : text
+        if value == 0 { return "0" }
+        let text = "\(Double(value))"
+        guard let e = text.firstIndex(where: { $0 == "e" || $0 == "E" }) else {
+            return text.hasSuffix(".0") ? String(text.dropLast(2)) : text
+        }
+        guard let exponent = Int(text[text.index(after: e)...]) else { throw Unsupported(reason: "unreadable number") }
+        var mantissa = String(text[..<e])
+        let negative = mantissa.hasPrefix("-")
+        if negative { mantissa.removeFirst() }
+        let parts = mantissa.split(separator: ".", omittingEmptySubsequences: false)
+        let digits = String(parts[0]) + (parts.count > 1 ? String(parts[1]) : "")
+        let point = parts[0].count + exponent
+        var out: String
+        if point <= 0 {
+            out = "0." + String(repeating: "0", count: -point) + digits
+        } else if point >= digits.count {
+            out = digits + String(repeating: "0", count: point - digits.count)
+        } else {
+            out = String(digits.prefix(point)) + "." + String(digits.dropFirst(point))
+        }
+        if out.contains(".") {
+            while out.hasSuffix("0") { out.removeLast() }
+            if out.hasSuffix(".") { out.removeLast() }
+        }
+        return (negative ? "-" : "") + out
     }
 
-    static func name(_ name: String) -> String {
-        var out = "/"
-        for byte in name.utf8 {
+    /// The bytes of a NUL-terminated C string.
+    static func bytes(_ pointer: UnsafePointer<CChar>) -> [UInt8] {
+        Array(UnsafeBufferPointer(start: UnsafeRawPointer(pointer).assumingMemoryBound(to: UInt8.self),
+                                  count: strlen(pointer)))
+    }
+
+    /// A dictionary key from `entries(of:)`: the escaped name behind a NUL.
+    static func nameKey(_ bytes: [UInt8]) -> String {
+        "\u{0}" + String(decoding: name(bytes: bytes), as: UTF8.self)
+    }
+
+    /// A name written from its bytes, any byte outside printable ASCII or a
+    /// delimiter escaped as #XX.
+    static func name(bytes: [UInt8]) -> Data {
+        var out = Data("/".utf8)
+        for byte in bytes {
             let delimiter = "()<>[]{}/%#".utf8.contains(byte)
             if byte < 0x21 || byte > 0x7E || delimiter {
-                out += String(format: "#%02X", byte)
+                out.append(Data(String(format: "#%02X", byte).utf8))
             } else {
-                out.append(Character(UnicodeScalar(byte)))
+                out.append(byte)
             }
         }
         return out
+    }
+
+    static func name(_ name: String) -> String {
+        String(decoding: self.name(bytes: Array(name.utf8)), as: UTF8.self)
     }
 
     static func hexString(_ string: CGPDFStringRef) -> Data {

@@ -29,11 +29,11 @@ public enum FormStamper {
     public static func stamp(original: URL, overlay: URL, pageMode: PageMode = .a4, output: URL) throws {
         let inputs = [(original, "blank form"), (overlay, "compiled overlay")]
         try refuseOverwriting(inputs: inputs, with: output)
-        let page = try singlePage(original, isOriginal: true)
+        let (originalDocument, page) = try singleDocument(original, isOriginal: true)
         let box = page.getBoxRect(.cropBox)
         let target = try targetSize(of: page, pageMode: pageMode)
 
-        let overlayPage = try singlePage(overlay, isOriginal: false)
+        let (overlayDocument, overlayPage) = try singleDocument(overlay, isOriginal: false)
         let overlayRotation = ((Int(overlayPage.rotationAngle) % 360) + 360) % 360
         guard overlayRotation == 0 else { throw FormFillError.rotatedOverlay(degrees: overlayRotation) }
         // Stamping copies only page content, so annotations would be lost unseen.
@@ -57,7 +57,8 @@ public enum FormStamper {
             : box
         let data: Data
         do {
-            data = try compose(original: page, overlay: overlayPage, overlayBox: overlayBox, pageBox: pageBox)
+            data = try compose(original: page, originalCatalog: originalDocument.catalog, overlay: overlayPage,
+                               overlayCatalog: overlayDocument.catalog, overlayBox: overlayBox, pageBox: pageBox)
         } catch let error as PDFObjectWriter.Unsupported {
             throw FormFillError.unstampable(error.reason)
         }
@@ -85,12 +86,17 @@ public enum FormStamper {
     /// The output PDF: one page whose contents are the original's streams,
     /// unchanged and kept apart by q/Q, followed by the overlay drawn as a
     /// form XObject under a name the original does not use.
-    static func compose(original page: CGPDFPage, overlay: CGPDFPage, overlayBox: CGRect,
-                        pageBox: CGRect) throws -> Data {
+    static func compose(original page: CGPDFPage, originalCatalog: CGPDFDictionaryRef?, overlay: CGPDFPage,
+                        overlayCatalog: CGPDFDictionaryRef?, overlayBox: CGRect, pageBox: CGRect) throws -> Data {
         typealias W = PDFObjectWriter
         var writer = PDFObjectWriter()
         let catalog = writer.reserve(), pages = writer.reserve(), pageNumber = writer.reserve()
 
+        // The overlay's own layer settings cannot be merged into the original's.
+        var layers: CGPDFObjectRef?
+        if let overlayCatalog, CGPDFDictionaryGetObject(overlayCatalog, "OCProperties", &layers) {
+            throw W.Unsupported(reason: "the overlay uses optional content (layers)")
+        }
         var overlayContent = Data()
         for stream in try contentStreams(of: overlay) {
             var format = CGPDFDataFormat.raw
@@ -123,19 +129,29 @@ public enum FormStamper {
         }
         var name = "PFFOverlay"
         var suffix = 0
-        while xobjects.contains(where: { $0.0 == name }) {
+        while xobjects.contains(where: { $0.0 == W.nameKey(Array(name.utf8)) }) {
             suffix += 1
             name = "PFFOverlay\(suffix)"
         }
         xobjects.append((name, W.reference(form)))
         resources.append(("XObject", W.dictionaryBody(xobjects)))
 
-        // The original is clipped to its own crop box, as a render of it is.
+        // The original is clipped to its own crop box, as a render of it is;
+        // when the crop box holds the whole output page the page box does
+        // that already, and a second clip at the same edge would be redundant.
         let crop = page.getBoxRect(.cropBox)
-        let clip = try [crop.minX, crop.minY, crop.width, crop.height].map(W.number).joined(separator: " ")
-        var contents = [writer.stream(entries: [], data: Data("q \(clip) re W n\n".utf8))]
+        var prefix = "q\n"
+        if !crop.contains(pageBox) {
+            let clip = try [crop.minX, crop.minY, crop.width, crop.height].map(W.number).joined(separator: " ")
+            prefix = "q \(clip) re W n\n"
+        }
+        var contents = [writer.stream(entries: [], data: Data(prefix.utf8))]
         for stream in try contentStreams(of: page) { contents.append(try writer.stream(stream)) }
-        contents.append(writer.stream(entries: [], data: Data("\nQ\nq \(W.name(name)) Do Q\n".utf8)))
+        // Close every q the original left open, then the wrapper's own, so
+        // the overlay is drawn in the page's untouched graphics state.
+        let open = openSaveLevels(of: page)
+        let restore = String(repeating: "Q\n", count: open + 1)
+        contents.append(writer.stream(entries: [], data: Data("\n\(restore)q \(W.name(name)) Do Q\n".utf8)))
 
         var pageEntries: [(String, Data)] = [
             ("Type", Data("/Page".utf8)), ("Parent", W.reference(pages)),
@@ -146,8 +162,36 @@ public enum FormStamper {
         if let group = try groupEntry(of: page, writer: &writer) { pageEntries.append(("Group", group)) }
         writer.set(pageNumber, W.dictionaryBody(pageEntries))
         writer.set(pages, Data("<< /Type /Pages /Kids [\(pageNumber) 0 R] /Count 1 >>".utf8))
-        writer.set(catalog, Data("<< /Type /Catalog /Pages \(pages) 0 R >>".utf8))
+        // Which optional-content layers are shown is set in the catalog;
+        // without it, layers the original hides would be drawn.
+        var catalogEntries: [(String, Data)] = [("Type", Data("/Catalog".utf8)), ("Pages", W.reference(pages))]
+        if let properties = try optionalContent(of: originalCatalog, writer: &writer) {
+            catalogEntries.append(("OCProperties", properties))
+        }
+        writer.set(catalog, W.dictionaryBody(catalogEntries))
         return try writer.data(root: catalog)
+    }
+
+    /// How many q the page's content leaves open at its end (extra Q
+    /// clamped at zero, as renderers ignore them).
+    static func openSaveLevels(of page: CGPDFPage) -> Int {
+        final class Depth { var value = 0 }
+        let depth = Depth()
+        guard let table = CGPDFOperatorTableCreate() else { return 0 }
+        defer { CGPDFOperatorTableRelease(table) }
+        CGPDFOperatorTableSetCallback(table, "q") { _, info in
+            info.map { Unmanaged<Depth>.fromOpaque($0).takeUnretainedValue() }?.value += 1
+        }
+        CGPDFOperatorTableSetCallback(table, "Q") { _, info in
+            guard let d = info.map({ Unmanaged<Depth>.fromOpaque($0).takeUnretainedValue() }) else { return }
+            d.value = max(0, d.value - 1)
+        }
+        let stream = CGPDFContentStreamCreateWithPage(page)
+        defer { CGPDFContentStreamRelease(stream) }
+        let scanner = CGPDFScannerCreate(stream, table, Unmanaged.passUnretained(depth).toOpaque())
+        CGPDFScannerScan(scanner)
+        CGPDFScannerRelease(scanner)
+        return depth.value
     }
 
     /// The page's /Contents: one stream or an array of streams.
@@ -164,6 +208,14 @@ public enum FormStamper {
             }
             return entry
         }
+    }
+
+    /// The document's /OCProperties, copied so that the same layer objects
+    /// the page's content refers to keep their visibility.
+    static func optionalContent(of catalog: CGPDFDictionaryRef?, writer: inout PDFObjectWriter) throws -> Data? {
+        var properties: CGPDFObjectRef?
+        guard let catalog, CGPDFDictionaryGetObject(catalog, "OCProperties", &properties), let properties else { return nil }
+        return try writer.value(properties)
     }
 
     /// The page's transparency /Group, which changes how its content blends.
@@ -270,14 +322,24 @@ public enum FormStamper {
     }
 
     private static func singlePage(_ url: URL, isOriginal: Bool) throws -> CGPDFPage {
+        try singleDocument(url, isOriginal: isOriginal).page
+    }
+
+    /// The document and its one page; a CGPDFPage does not keep its document
+    /// alive, so callers that need the catalog hold on to the document.
+    private static func singleDocument(_ url: URL, isOriginal: Bool) throws -> (document: CGPDFDocument, page: CGPDFPage) {
         guard let document = CGPDFDocument(url as CFURL) else {
             throw FormFillError.unreadablePDF(url.path)
+        }
+        // A document with a user password opens locked; try the empty one.
+        if document.isEncrypted, !document.isUnlocked, !document.unlockWithPassword("") {
+            throw FormFillError.lockedPDF(url.path)
         }
         guard document.numberOfPages > 0 else { throw FormFillError.emptyPDF(url.path) }
         guard document.numberOfPages == 1, let page = document.page(at: 1) else {
             throw isOriginal ? FormFillError.multiPageOriginal(pages: document.numberOfPages)
                              : FormFillError.overlayPageCount(document.numberOfPages)
         }
-        return page
+        return (document, page)
     }
 }

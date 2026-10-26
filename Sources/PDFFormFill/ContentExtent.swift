@@ -101,7 +101,9 @@ final class FontMetrics {
                 if CGPDFDictionaryGetArray(descendant, "DW2", &dw2), let dw2 { CGPDFArrayGetNumber(dw2, 1, &w1) }
                 let metrics = FontMetrics(twoByte: true, vertical: true, missing: w1 / 1000)
                 var w2: CGPDFArrayRef?
-                if CGPDFDictionaryGetArray(descendant, "W2", &w2), let w2 { metrics.readCIDArray(w2, stride: 3) }
+                if CGPDFDictionaryGetArray(descendant, "W2", &w2), let w2 {
+                    guard metrics.readCIDArray(w2, stride: 3) else { return nil }
+                }
                 metrics.bbox = descriptorBBox(descendant, sx: 0.001, sy: 0.001)
                 return metrics
             }
@@ -109,7 +111,9 @@ final class FontMetrics {
             CGPDFDictionaryGetNumber(descendant, "DW", &dw)
             let metrics = FontMetrics(twoByte: true, vertical: false, missing: dw / 1000)
             var w: CGPDFArrayRef?
-            if CGPDFDictionaryGetArray(descendant, "W", &w), let w { metrics.readCIDArray(w, stride: 1) }
+            if CGPDFDictionaryGetArray(descendant, "W", &w), let w {
+                guard metrics.readCIDArray(w, stride: 1) else { return nil }
+            }
             metrics.bbox = descriptorBBox(descendant, sx: 0.001, sy: 0.001)
             return metrics
         }
@@ -131,7 +135,9 @@ final class FontMetrics {
             var width: CGPDFReal = 0
             // Simple fonts have one-byte codes; entries past 255 never apply.
             guard first >= 0, first <= 255 - i else { break }
-            if CGPDFArrayGetNumber(widthArray, i, &width) { metrics.widths[first + i] = width * scale }
+            // A width that cannot be read leaves the font unplaceable.
+            guard CGPDFArrayGetNumber(widthArray, i, &width), width.isFinite else { return nil }
+            metrics.widths[first + i] = width * scale
         }
         metrics.bbox = descriptorBBox(font, sx: scale, sy: scale)
         return metrics
@@ -163,13 +169,14 @@ final class FontMetrics {
     }
 
     /// /W (stride 1: one width per CID) or /W2 (stride 3: w1y, vx, vy per
-    /// CID), in either form: `c [values]` or `cfirst clast values`.
-    private func readCIDArray(_ array: CGPDFArrayRef, stride: Int) {
+    /// CID), in either form: `c [values]` or `cfirst clast values`. False
+    /// when an entry cannot be read, so the font is left unplaceable.
+    private func readCIDArray(_ array: CGPDFArrayRef, stride: Int) -> Bool {
         let count = CGPDFArrayGetCount(array)
         var i = 0
         while i < count {
             var first: CGPDFInteger = 0
-            guard CGPDFArrayGetInteger(array, i, &first) else { return }
+            guard CGPDFArrayGetInteger(array, i, &first) else { return false }
             var list: CGPDFArrayRef?
             if CGPDFArrayGetArray(array, i + 1, &list), let list {
                 let n = CGPDFArrayGetCount(list) / stride
@@ -177,19 +184,21 @@ final class FontMetrics {
                 for k in 0..<n {
                     guard first >= 0, first <= 0xFFFF - k else { break }
                     var value: CGPDFReal = 0
-                    if CGPDFArrayGetNumber(list, k * stride, &value) { widths[first + k] = value / 1000 }
+                    guard CGPDFArrayGetNumber(list, k * stride, &value), value.isFinite else { return false }
+                    widths[first + k] = value / 1000
                 }
                 i += 2
             } else {
                 var last: CGPDFInteger = 0
                 var value: CGPDFReal = 0
                 guard CGPDFArrayGetInteger(array, i + 1, &last), CGPDFArrayGetNumber(array, i + 2, &value),
-                      last >= first else { return }
+                      value.isFinite, last >= first else { return false }
                 ranges.append((first...last, value / 1000))
                 i += 2 + stride
             }
         }
         ranges.sort { $0.0.lowerBound < $1.0.lowerBound }
+        return true
     }
 
     private static func name(_ dictionary: CGPDFDictionaryRef, _ key: String) -> String? {
@@ -405,7 +414,7 @@ final class ScanState {
         var values: [CGFloat] = []
         for i in 0..<count {
             var value: CGPDFReal = 0
-            guard CGPDFArrayGetNumber(array, i, &value) else { return nil }
+            guard CGPDFArrayGetNumber(array, i, &value), value.isFinite else { return nil }
             values.append(value)
         }
         return values
@@ -458,8 +467,12 @@ final class ScanState {
             s.g.fontSize = v[0]
             var name: UnsafePointer<CChar>?
             var dictionary: CGPDFDictionaryRef?
-            if CGPDFScannerPopName(scanner, &name), let name,
-               let object = CGPDFContentStreamGetResource(CGPDFScannerGetContentStream(scanner), "Font", name),
+            guard CGPDFScannerPopName(scanner, &name), let name else {
+                s.g.font = nil
+                s.result.undecidable += 1
+                return
+            }
+            if let object = CGPDFContentStreamGetResource(CGPDFScannerGetContentStream(scanner), "Font", name),
                CGPDFObjectGetValue(object, .dictionary, &dictionary), let dictionary {
                 s.g.font = s.font(dictionary)
             } else {
@@ -687,6 +700,13 @@ final class ScanState {
             }
             var form = CGAffineTransform.identity
             var array: CGPDFArrayRef?
+            var present: CGPDFObjectRef?
+            // A /Matrix or /BBox that is present but not an array cannot be read.
+            for key in ["Matrix", "BBox"] where CGPDFDictionaryGetObject(dictionary, key, &present)
+                && !CGPDFDictionaryGetArray(dictionary, key, &array) {
+                s.result.undecidable += 1
+                return
+            }
             if CGPDFDictionaryGetArray(dictionary, "Matrix", &array), let array {
                 guard let v = ScanState.numbers(in: array, count: 6) else {
                     s.result.undecidable += 1

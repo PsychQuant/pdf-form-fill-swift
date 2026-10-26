@@ -168,10 +168,15 @@ public struct OverlayCompiler: Sendable {
         var found: [String] = []
         for line in text.split(separator: "\n") {
             guard let start = line.range(of: "Missing character: There is no ") else { continue }
+            // Text outside any node is typeset in nullfont and never shown;
+            // it is a stray token in the picture, not a character a font lacks.
+            guard !line.contains("in font nullfont") else { continue }
             let rest = line[start.upperBound...]
-            guard let end = rest.range(of: " in font") ?? rest.range(of: " (U+") else { continue }
+            guard let end = rest.range(of: " in font") else { continue }
             var character = String(rest[..<end.lowerBound])
-            if let code = character.range(of: " (U+") { character = String(character[..<code.lowerBound]) }
+            for marker in [" (U+", " (\""] {
+                if let code = character.range(of: marker) { character = String(character[..<code.lowerBound]) }
+            }
             if !character.isEmpty, !found.contains(character) { found.append(character) }
         }
         return found
