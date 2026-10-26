@@ -37,11 +37,20 @@ public enum FormFiller {
         // is not invariant under the height, and in page mode a4 the original
         // and the output differ in height.
         let originalPage = try PageRaster.page(url: original, index: 0)
-        let canvas = PageRaster.canvasHeight(heights: [originalPage.getBoxRect(.cropBox).height, target.height], dpi: dpi)
-        let originalRaster = try PageRaster.render(page: originalPage, dpi: dpi, canvasHeight: canvas)
+        let originalHeight = originalPage.getBoxRect(.cropBox).height
+        let firstCanvas = PageRaster.canvasHeight(heights: [originalHeight, target.height], dpi: dpi)
+        let firstRaster = try PageRaster.render(page: originalPage, dpi: dpi, canvasHeight: firstCanvas)
 
         let overlay = try OverlayCompiler(engine: engine).compile(tex: tex, pageSize: target, timeout: timeout)
         defer { OverlayCompiler.discard(overlay) }
+        // The compiled overlay may be up to 0.01 bp taller than the target,
+        // one more row at some resolutions; the original is then drawn again
+        // on the taller canvas, still before the output is written.
+        let overlayHeight = try PageRaster.page(url: overlay, index: 0).getBoxRect(.cropBox).height
+        let canvas = PageRaster.canvasHeight(heights: [originalHeight, target.height, overlayHeight], dpi: dpi)
+        let originalRaster = canvas == firstCanvas
+            ? firstRaster
+            : try PageRaster.render(url: original, pageIndex: 0, dpi: dpi, canvasHeight: canvas)
         // Ink beyond the overlay's page is clipped from every render, so the
         // overlay checks would never see typed text that was cut off.
         let offPage = try PageGeometry.inkOutsideCropBox(page: PageRaster.page(url: overlay, index: 0))
