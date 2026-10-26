@@ -59,11 +59,11 @@ struct Round10FixTests {
     func budgetBoundsEveryWrite() throws {
         var writer = PDFObjectWriter(budget: 1000)
         _ = try writer.stream(entries: [], data: Data(repeating: 0x20, count: 500))
-        #expect(throws: PDFObjectWriter.Unsupported.self) {
+        #expect(throws: StampRefusal.self) {
             _ = try writer.stream(entries: [], data: Data(repeating: 0x20, count: 600))
         }
         let number = writer.reserve()
-        #expect(throws: PDFObjectWriter.Unsupported.self) {
+        #expect(throws: StampRefusal.self) {
             try writer.set(number, Data(repeating: 0x20, count: 600))
         }
     }

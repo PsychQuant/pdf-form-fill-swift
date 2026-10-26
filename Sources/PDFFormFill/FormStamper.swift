@@ -59,8 +59,8 @@ public enum FormStamper {
         do {
             data = try compose(original: page, originalCatalog: originalDocument.catalog, overlay: overlayPage,
                                overlayCatalog: overlayDocument.catalog, overlayBox: overlayBox, pageBox: pageBox)
-        } catch let error as PDFObjectWriter.Unsupported {
-            throw FormFillError.unstampable(error.reason)
+        } catch let refusal as StampRefusal {
+            throw FormFillError.unstampable(refusal)
         }
         do {
             try data.write(to: temporary, options: .withoutOverwriting)
@@ -95,13 +95,13 @@ public enum FormStamper {
         // The overlay's own layer settings cannot be merged into the original's.
         var layers: CGPDFObjectRef?
         if let overlayCatalog, CGPDFDictionaryGetObject(overlayCatalog, "OCProperties", &layers) {
-            throw W.Unsupported(reason: "the overlay uses optional content (layers)")
+            throw StampRefusal.overlayHasLayers
         }
         var overlayContent = Data()
         for stream in try contentStreams(of: overlay) {
             var format = CGPDFDataFormat.raw
             guard let data = CGPDFStreamCopyData(stream, &format), format == .raw else {
-                throw W.Unsupported(reason: "undecodable overlay content")
+                throw StampRefusal.undecodableOverlayContent
             }
             overlayContent.append(data as Data)
             overlayContent.append(Data("\n".utf8))
@@ -209,7 +209,7 @@ public enum FormStamper {
         return try (0..<CGPDFArrayGetCount(array)).map { index in
             var entry: CGPDFStreamRef?
             guard CGPDFArrayGetStream(array, index, &entry), let entry else {
-                throw PDFObjectWriter.Unsupported(reason: "a page content entry is not a stream")
+                throw StampRefusal.contentEntryNotStream
             }
             return entry
         }

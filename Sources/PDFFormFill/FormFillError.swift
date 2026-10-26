@@ -27,7 +27,7 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
     case overlayUnverifiable(parts: Int)
     case annotatedOverlay(count: Int)
     /// The PDF's objects could not be copied into the output.
-    case unstampable(String)
+    case unstampable(StampRefusal)
     /// Characters the overlay's fonts lack; the engine left them out.
     case missingCharacters([String])
     /// Text in the overlay picture outside any node; the engine leaves it out.

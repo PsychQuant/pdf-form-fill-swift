@@ -7,10 +7,6 @@ import Foundation
 /// data is kept as it is. A redraw through a CoreGraphics PDF context would
 /// instead rewrite every coordinate, rounded, and change how the page renders.
 struct PDFObjectWriter {
-    struct Unsupported: Error {
-        let reason: String
-    }
-
     /// Bodies by object number − 1; nil until written.
     private var bodies: [Data?] = []
     private var dictionaries: [CGPDFDictionaryRef: Int] = [:]
@@ -51,7 +47,7 @@ struct PDFObjectWriter {
 
     private func checkBudget(adding count: Int = 0) throws {
         guard written + count <= budget else {
-            throw Unsupported(reason: "the copy would exceed \(budget) bytes")
+            throw StampRefusal.tooLarge(limit: budget)
         }
     }
 
@@ -82,12 +78,12 @@ struct PDFObjectWriter {
             return Data(try Self.number(value).utf8)
         case .name:
             var name: UnsafePointer<CChar>?
-            guard CGPDFObjectGetValue(object, .name, &name), let name else { throw Unsupported(reason: "unreadable name") }
+            guard CGPDFObjectGetValue(object, .name, &name), let name else { throw StampRefusal.unreadable(.name) }
             return Self.name(bytes: Self.bytes(name))
         case .string:
             var string: CGPDFStringRef?
             guard CGPDFObjectGetValue(object, .string, &string), let string else {
-                throw Unsupported(reason: "unreadable string")
+                throw StampRefusal.unreadable(.string)
             }
             if let cached = strings[string] {
                 if let number = cached.number { return Self.reference(number) }
@@ -102,20 +98,20 @@ struct PDFObjectWriter {
             return data
         case .array:
             var array: CGPDFArrayRef?
-            guard CGPDFObjectGetValue(object, .array, &array), let array else { throw Unsupported(reason: "unreadable array") }
+            guard CGPDFObjectGetValue(object, .array, &array), let array else { throw StampRefusal.unreadable(.array) }
             return try self.array(array)
         case .dictionary:
             var dictionary: CGPDFDictionaryRef?
             guard CGPDFObjectGetValue(object, .dictionary, &dictionary), let dictionary else {
-                throw Unsupported(reason: "unreadable dictionary")
+                throw StampRefusal.unreadable(.dictionary)
             }
             return Self.reference(try self.dictionary(dictionary))
         case .stream:
             var stream: CGPDFStreamRef?
-            guard CGPDFObjectGetValue(object, .stream, &stream), let stream else { throw Unsupported(reason: "unreadable stream") }
+            guard CGPDFObjectGetValue(object, .stream, &stream), let stream else { throw StampRefusal.unreadable(.stream) }
             return Self.reference(try self.stream(stream))
         @unknown default:
-            throw Unsupported(reason: "unknown object type")
+            throw StampRefusal.unreadable(.unknown)
         }
     }
 
@@ -138,7 +134,7 @@ struct PDFObjectWriter {
         var out = Data("[".utf8)
         for i in 0..<CGPDFArrayGetCount(array) {
             var object: CGPDFObjectRef?
-            guard CGPDFArrayGetObject(array, i, &object), let object else { throw Unsupported(reason: "unreadable array entry") }
+            guard CGPDFArrayGetObject(array, i, &object), let object else { throw StampRefusal.unreadable(.array) }
             if i > 0 { out.append(Data(" ".utf8)) }
             out.append(try value(object))
             try checkBudget(adding: out.count)
@@ -183,15 +179,15 @@ struct PDFObjectWriter {
     /// again, or JPEG and JPEG 2000 data kept with their filter.
     mutating func stream(_ stream: CGPDFStreamRef) throws -> Int {
         if let number = streams[stream] { return number }
-        guard let dictionary = CGPDFStreamGetDictionary(stream) else { throw Unsupported(reason: "stream without dictionary") }
+        guard let dictionary = CGPDFStreamGetDictionary(stream) else { throw StampRefusal.unreadable(.stream) }
         var external: CGPDFObjectRef?
-        guard !CGPDFDictionaryGetObject(dictionary, "F", &external) else { throw Unsupported(reason: "external stream") }
+        guard !CGPDFDictionaryGetObject(dictionary, "F", &external) else { throw StampRefusal.externalStream }
         let number = reserve()
         streams[stream] = number
         try descend()
         defer { depth -= 1 }
         var format = CGPDFDataFormat.raw
-        guard let copied = CGPDFStreamCopyData(stream, &format) else { throw Unsupported(reason: "undecodable stream") }
+        guard let copied = CGPDFStreamCopyData(stream, &format) else { throw StampRefusal.undecodableStream }
         let decoded = copied as Data
         try checkBudget(adding: decoded.count)
         var entries = try self.entries(of: dictionary, skipping: ["Length", "Filter", "DecodeParms", "DL"])
@@ -208,7 +204,7 @@ struct PDFObjectWriter {
             data = decoded
             entries.append(("Filter", Data("/JPXDecode".utf8)))
         @unknown default:
-            throw Unsupported(reason: "unknown stream format")
+            throw StampRefusal.undecodableStream
         }
         try set(number, Self.streamBody(entries: entries, data: data))
         return number
@@ -244,7 +240,7 @@ struct PDFObjectWriter {
         depth += 1
         guard depth <= Self.maxDepth else {
             depth -= 1
-            throw Unsupported(reason: "objects nested deeper than \(Self.maxDepth)")
+            throw StampRefusal.nestedTooDeep(limit: Self.maxDepth)
         }
     }
 
@@ -253,7 +249,7 @@ struct PDFObjectWriter {
         var out = Data("%PDF-1.7\n%\u{E2}\u{E3}\u{CF}\u{D3}\n".utf8)
         var offsets: [Int] = []
         for (index, body) in bodies.enumerated() {
-            guard let body else { throw Unsupported(reason: "object \(index + 1) was reserved but never written") }
+            guard let body else { throw StampRefusal.unwrittenObject(number: index + 1) }
             offsets.append(out.count)
             out.append(Data("\(index + 1) 0 obj\n".utf8))
             out.append(body)
@@ -302,13 +298,13 @@ struct PDFObjectWriter {
     /// A number in plain decimal notation that reads back as the same value:
     /// the shortest round-trip digits, with any exponent written out.
     static func number(_ value: CGFloat) throws -> String {
-        guard value.isFinite else { throw Unsupported(reason: "non-finite number") }
+        guard value.isFinite else { throw StampRefusal.nonFiniteNumber }
         if value == 0 { return "0" }
         let text = "\(Double(value))"
         guard let e = text.firstIndex(where: { $0 == "e" || $0 == "E" }) else {
             return text.hasSuffix(".0") ? String(text.dropLast(2)) : text
         }
-        guard let exponent = Int(text[text.index(after: e)...]) else { throw Unsupported(reason: "unreadable number") }
+        guard let exponent = Int(text[text.index(after: e)...]) else { throw StampRefusal.unreadable(.number) }
         var mantissa = String(text[..<e])
         let negative = mantissa.hasPrefix("-")
         if negative { mantissa.removeFirst() }
@@ -372,7 +368,7 @@ struct PDFObjectWriter {
     /// the Adler-32 checksum.
     static func deflate(_ data: Data) throws -> Data {
         guard let raw = try? (data as NSData).compressed(using: .zlib) as Data else {
-            throw Unsupported(reason: "compression failed")
+            throw StampRefusal.compressionFailed
         }
         var a: UInt32 = 1, b: UInt32 = 0
         for byte in data {
