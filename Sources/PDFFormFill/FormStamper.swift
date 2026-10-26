@@ -145,12 +145,14 @@ public enum FormStamper {
             let clip = try [crop.minX, crop.minY, crop.width, crop.height].map(W.number).joined(separator: " ")
             prefix = "q \(clip) re W n\n"
         }
+        // Extra Q in the original pops a q of ours, never the wrapper's, and
+        // every level still open at its end is closed with the wrapper, so
+        // the overlay is drawn in the page's untouched graphics state.
+        let levels = saveLevels(of: page)
+        prefix += String(repeating: "q\n", count: levels.deficit)
         var contents = [try writer.stream(entries: [], data: Data(prefix.utf8))]
         for stream in try contentStreams(of: page) { contents.append(try writer.stream(stream)) }
-        // Close every q the original left open, then the wrapper's own, so
-        // the overlay is drawn in the page's untouched graphics state.
-        let open = openSaveLevels(of: page)
-        let restore = String(repeating: "Q\n", count: open + 1)
+        let restore = String(repeating: "Q\n", count: levels.deficit + levels.final + 1)
         contents.append(try writer.stream(entries: [], data: Data("\n\(restore)q \(W.name(name)) Do Q\n".utf8)))
 
         var pageEntries: [(String, Data)] = [
@@ -172,26 +174,29 @@ public enum FormStamper {
         return try writer.data(root: catalog)
     }
 
-    /// How many q the page's content leaves open at its end (extra Q
-    /// clamped at zero, as renderers ignore them).
-    static func openSaveLevels(of page: CGPDFPage) -> Int {
-        final class Depth { var value = 0 }
+    /// The page content's save levels: `deficit` is how far extra Q take it
+    /// below where it started, `final` the net level at its end measured
+    /// from that lowest point's opposite (so deficit + final is what stays
+    /// open above the start once the deficit is pre-filled with q).
+    static func saveLevels(of page: CGPDFPage) -> (deficit: Int, final: Int) {
+        final class Depth { var value = 0; var lowest = 0 }
         let depth = Depth()
-        guard let table = CGPDFOperatorTableCreate() else { return 0 }
+        guard let table = CGPDFOperatorTableCreate() else { return (0, 0) }
         defer { CGPDFOperatorTableRelease(table) }
         CGPDFOperatorTableSetCallback(table, "q") { _, info in
             info.map { Unmanaged<Depth>.fromOpaque($0).takeUnretainedValue() }?.value += 1
         }
         CGPDFOperatorTableSetCallback(table, "Q") { _, info in
             guard let d = info.map({ Unmanaged<Depth>.fromOpaque($0).takeUnretainedValue() }) else { return }
-            d.value = max(0, d.value - 1)
+            d.value -= 1
+            d.lowest = min(d.lowest, d.value)
         }
         let stream = CGPDFContentStreamCreateWithPage(page)
         defer { CGPDFContentStreamRelease(stream) }
         let scanner = CGPDFScannerCreate(stream, table, Unmanaged.passUnretained(depth).toOpaque())
         CGPDFScannerScan(scanner)
         CGPDFScannerRelease(scanner)
-        return depth.value
+        return (-depth.lowest, depth.value)
     }
 
     /// The page's /Contents: one stream or an array of streams.

@@ -118,4 +118,53 @@ struct Round10FixTests {
                                          pageMode: .a4, dpi: dpi)
         #expect(result.passed, "\(result.report.checks.filter { $0.count > 0 })")
     }
+
+    @Test("extra Q in the original cannot leave its state in force for the overlay")
+    func extraRestoreInOriginal() throws {
+        let blank = try Round6FixTests.rawPDF([
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.2756 841.8898] /Contents 4 0 R >>",
+            Round6FixTests.stream("", "Q 1 0 0 1 300 300 cm 0 0 0 rg 0 0 20 20 re f"),
+        ])
+        defer { try? FileManager.default.removeItem(at: blank) }
+        let page = try PageRaster.page(url: blank, index: 0)
+        #expect(FormStamper.saveLevels(of: page) == (1, -1))
+        let out = try Round9FixTests.stampAlone(blank)
+        let text = String(decoding: try Data(contentsOf: out), as: UTF8.self)
+        // One extra q before the original; deficit 1 + final −1 + wrapper 1 = one Q after it.
+        #expect(text.contains("q\nq\n"))
+        let a = try PageRaster.render(url: blank, pageIndex: 0, dpi: 72), b = try PageRaster.render(url: out, pageIndex: 0, dpi: 72)
+        #expect(try SignedDiff(original: a, output: b).changedPixelCount == 0)
+    }
+
+    @Test("strokes across the 1024th row at 144 dpi compare equal in page mode a4",
+          .enabled(if: xelatexAvailable, "xelatex not found"))
+    func strokesAcrossPowerOfTwoRow() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("rows-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let consumer = try #require(CGDataConsumer(url: url as CFURL))
+        var media = CGRect(x: 0, y: 0, width: 596, height: 843)
+        let context = try #require(CGContext(consumer: consumer, mediaBox: &media, nil))
+        context.beginPDFPage(nil)
+        context.setStrokeColor(CGColor(gray: 0.3, alpha: 1))
+        context.setLineWidth(0.3)
+        // Device rows 256, 512 and 1024 from the top at 144 dpi lie 128, 256
+        // and 512 bp below the top edge.
+        for row in [256.0, 512.0, 1024.0] {
+            let y = 843 - row / 2
+            for i in 0..<60 {
+                let x = 80 + Double(i) * 7.3
+                context.move(to: CGPoint(x: x, y: y - 6))
+                context.addLine(to: CGPoint(x: x + 5.1, y: y + 6))
+            }
+        }
+        context.strokePath()
+        context.endPDFPage()
+        context.closePDF()
+        let tex = try StampFidelityTests.project(blank: url, typed: "")
+        let result = try FormFiller.fill(tex: tex, output: tex.deletingLastPathComponent().appendingPathComponent("out.pdf"),
+                                         pageMode: .a4, dpi: 144)
+        #expect(result.passed, "\(result.report.checks.filter { $0.count > 0 })")
+    }
 }
