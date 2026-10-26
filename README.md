@@ -59,16 +59,18 @@ is refused, because no render shows that part. Two checks share the work:
 ink up to one page beyond each edge is found pixel by pixel, and drawing
 farther out is found by reading the overlay's content stream. The stream
 check places every glyph by following the font's widths and the text state
-(`Tc`, `Tw`, `Tz`, `Ts`, `TJ` displacements, `q`/`Q`, form XObjects), and
-reports an em box around a glyph, a point of a painted path, an image corner
-or a shading that lies more than half a page beyond the page, unless a clip
-keeps it within that reach. It is conservative: curve control points count,
+(`Tc`, `Tw`, `Tz`, `Ts`, `TJ` displacements, fonts set by `Tf` or by an
+ExtGState through `gs`, `q`/`Q`, form XObjects), and reports an em box around
+a glyph, a point of a painted path, an image corner or a shading that lies
+more than 0.9 of a page beyond the page, unless a clip keeps it within that
+reach. It is conservative: curve control points count,
 and a clip is taken as its bounding box. An overlay whose drawing cannot be
 placed is refused as unverifiable: text in a font without width data (only
 `/Widths` fonts and Identity-H/V CID fonts are read), a form XObject that
 cannot be read to the end (a cycle, nesting deeper than 16, more than 2000
-distinct forms or 100000 form invocations), an XObject name that does not
-resolve, or a content stream that fails to parse. An overlay with
+distinct forms or 100000 form invocations), a resource name that does not
+resolve, an operator whose operands cannot be read, or a content stream that
+fails to parse. An overlay with
 annotations (links, form fields) is refused too, since stamping drops them.
 
 ## Page size

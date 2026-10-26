@@ -8,26 +8,28 @@ import Foundation
 /// The work is split with the pixel check (`PageGeometry.inkOutsideCropBox`),
 /// which sees ink up to one page beyond each edge. This scan marks the
 /// points of painted paths, the corners of images and an em box around every
-/// glyph it can place, and reports those more than half a page beyond the
-/// crop box. Whatever it does not report lies within half a page of the edge,
-/// where the pixel check sees it, so no band is left between the two.
-/// Drawing whose clip lies within that reach cannot be visible beyond it and
-/// is not reported.
+/// glyph it can place, and reports those more than 0.9 of a page beyond the
+/// crop box. Ink lies within the marks (the convex hull of a path's points,
+/// an image's corners, a glyph's em box), so whatever the scan does not
+/// report lies where the pixel check sees it, and no band is left between
+/// the two. Drawing whose clip lies within that reach cannot be visible
+/// beyond it and is not reported.
 enum ContentExtent {
 
     struct Result: Equatable {
-        /// Marked positions more than half a page beyond the crop box.
+        /// Marked positions more than 0.9 of a page beyond the crop box.
         var outside = 0
         /// Parts that could not be placed: text in a font without width
         /// data, a form XObject that cannot be read to the end (a cycle,
         /// nesting deeper than 16, more than 2000 distinct forms or 100000
-        /// form invocations), or a content stream that fails to parse.
+        /// form invocations), an unresolvable resource, an operator whose
+        /// operands cannot be read, or a content stream that fails to parse.
         var undecidable = 0
     }
 
     static func scan(page: CGPDFPage) -> Result {
         let box = page.getBoxRect(.cropBox)
-        let state = ScanState(reach: box.insetBy(dx: -box.width / 2, dy: -box.height / 2))
+        let state = ScanState(reach: box.insetBy(dx: -box.width * 0.9, dy: -box.height * 0.9))
         state.resources = inheritedResources(of: page)
         let stream = CGPDFContentStreamCreateWithPage(page)
         defer { CGPDFContentStreamRelease(stream) }
@@ -367,7 +369,10 @@ final class ScanState {
 
     static func string(_ scanner: CGPDFScannerRef, into s: ScanState) {
         var string: CGPDFStringRef?
-        guard CGPDFScannerPopString(scanner, &string), let string else { return }
+        guard CGPDFScannerPopString(scanner, &string), let string else {
+            s.result.undecidable += 1
+            return
+        }
         s.show(bytes(of: string))
     }
 
@@ -390,7 +395,8 @@ final class ScanState {
             s.g = g
         }
         CGPDFOperatorTableSetCallback(table, "cm") { scanner, info in
-            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 6) else { return }
+            guard let s = ScanState.state(info) else { return }
+            guard let v = ScanState.numbers(scanner, 6) else { s.result.undecidable += 1; return }
             s.g.ctm = ScanState.matrix(v).concatenating(s.g.ctm)
         }
         CGPDFOperatorTableSetCallback(table, "BT") { _, info in
@@ -399,7 +405,8 @@ final class ScanState {
             s.lineMatrix = .identity
         }
         CGPDFOperatorTableSetCallback(table, "Tf") { scanner, info in
-            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 1) else { return }
+            guard let s = ScanState.state(info) else { return }
+            guard let v = ScanState.numbers(scanner, 1) else { s.result.undecidable += 1; return }
             s.g.fontSize = v[0]
             var name: UnsafePointer<CChar>?
             var dictionary: CGPDFDictionaryRef?
@@ -411,42 +418,73 @@ final class ScanState {
                 s.g.font = nil
             }
         }
+        // An ExtGState can set the font and size with /Font [font size].
+        CGPDFOperatorTableSetCallback(table, "gs") { scanner, info in
+            guard let s = ScanState.state(info) else { return }
+            var name: UnsafePointer<CChar>?
+            var state: CGPDFDictionaryRef?
+            guard CGPDFScannerPopName(scanner, &name), let name,
+                  let object = CGPDFContentStreamGetResource(CGPDFScannerGetContentStream(scanner), "ExtGState", name),
+                  CGPDFObjectGetValue(object, .dictionary, &state), let state else {
+                s.result.undecidable += 1
+                return
+            }
+            var font: CGPDFArrayRef?
+            guard CGPDFDictionaryGetArray(state, "Font", &font), let font else { return }
+            var dictionary: CGPDFDictionaryRef?
+            var size: CGPDFReal = 0
+            guard CGPDFArrayGetDictionary(font, 0, &dictionary), let dictionary, CGPDFArrayGetNumber(font, 1, &size) else {
+                s.g.font = nil
+                s.result.undecidable += 1
+                return
+            }
+            s.g.font = s.font(dictionary)
+            s.g.fontSize = size
+        }
         CGPDFOperatorTableSetCallback(table, "Tc") { scanner, info in
-            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 1) else { return }
+            guard let s = ScanState.state(info) else { return }
+            guard let v = ScanState.numbers(scanner, 1) else { s.result.undecidable += 1; return }
             s.g.charSpacing = v[0]
         }
         CGPDFOperatorTableSetCallback(table, "Tw") { scanner, info in
-            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 1) else { return }
+            guard let s = ScanState.state(info) else { return }
+            guard let v = ScanState.numbers(scanner, 1) else { s.result.undecidable += 1; return }
             s.g.wordSpacing = v[0]
         }
         CGPDFOperatorTableSetCallback(table, "Tz") { scanner, info in
-            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 1) else { return }
+            guard let s = ScanState.state(info) else { return }
+            guard let v = ScanState.numbers(scanner, 1) else { s.result.undecidable += 1; return }
             s.g.horizontalScale = v[0] / 100
         }
         CGPDFOperatorTableSetCallback(table, "TL") { scanner, info in
-            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 1) else { return }
+            guard let s = ScanState.state(info) else { return }
+            guard let v = ScanState.numbers(scanner, 1) else { s.result.undecidable += 1; return }
             s.g.leading = v[0]
         }
         CGPDFOperatorTableSetCallback(table, "Ts") { scanner, info in
-            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 1) else { return }
+            guard let s = ScanState.state(info) else { return }
+            guard let v = ScanState.numbers(scanner, 1) else { s.result.undecidable += 1; return }
             s.g.rise = v[0]
         }
         CGPDFOperatorTableSetCallback(table, "Tr") { scanner, info in
             guard let s = ScanState.state(info) else { return }
             var mode: CGPDFInteger = 0
-            if CGPDFScannerPopInteger(scanner, &mode) { s.g.renderMode = mode }
+            if CGPDFScannerPopInteger(scanner, &mode) { s.g.renderMode = mode } else { s.result.undecidable += 1 }
         }
         CGPDFOperatorTableSetCallback(table, "Tm") { scanner, info in
-            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 6) else { return }
+            guard let s = ScanState.state(info) else { return }
+            guard let v = ScanState.numbers(scanner, 6) else { s.result.undecidable += 1; return }
             s.lineMatrix = ScanState.matrix(v)
             s.textMatrix = s.lineMatrix
         }
         CGPDFOperatorTableSetCallback(table, "Td") { scanner, info in
-            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 2) else { return }
+            guard let s = ScanState.state(info) else { return }
+            guard let v = ScanState.numbers(scanner, 2) else { s.result.undecidable += 1; return }
             s.moveLine(v[0], v[1])
         }
         CGPDFOperatorTableSetCallback(table, "TD") { scanner, info in
-            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 2) else { return }
+            guard let s = ScanState.state(info) else { return }
+            guard let v = ScanState.numbers(scanner, 2) else { s.result.undecidable += 1; return }
             s.g.leading = -v[1]
             s.moveLine(v[0], v[1])
         }
@@ -467,7 +505,10 @@ final class ScanState {
             guard let s = ScanState.state(info) else { return }
             var string: CGPDFStringRef?
             guard CGPDFScannerPopString(scanner, &string), let string,
-                  let v = ScanState.numbers(scanner, 2) else { return }
+                  let v = ScanState.numbers(scanner, 2) else {
+                s.result.undecidable += 1
+                return
+            }
             s.g.wordSpacing = v[0]
             s.g.charSpacing = v[1]
             s.moveLine(0, -s.g.leading)
@@ -476,7 +517,10 @@ final class ScanState {
         CGPDFOperatorTableSetCallback(table, "TJ") { scanner, info in
             guard let s = ScanState.state(info) else { return }
             var array: CGPDFArrayRef?
-            guard CGPDFScannerPopArray(scanner, &array), let array else { return }
+            guard CGPDFScannerPopArray(scanner, &array), let array else {
+                s.result.undecidable += 1
+                return
+            }
             for i in 0..<CGPDFArrayGetCount(array) {
                 var number: CGPDFReal = 0
                 var string: CGPDFStringRef?
@@ -488,25 +532,30 @@ final class ScanState {
             }
         }
         CGPDFOperatorTableSetCallback(table, "m") { scanner, info in
-            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 2) else { return }
+            guard let s = ScanState.state(info) else { return }
+            guard let v = ScanState.numbers(scanner, 2) else { s.result.undecidable += 1; return }
             s.addPoint(v[0], v[1])
         }
         CGPDFOperatorTableSetCallback(table, "l") { scanner, info in
-            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 2) else { return }
+            guard let s = ScanState.state(info) else { return }
+            guard let v = ScanState.numbers(scanner, 2) else { s.result.undecidable += 1; return }
             s.addPoint(v[0], v[1])
         }
         CGPDFOperatorTableSetCallback(table, "c") { scanner, info in
-            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 6) else { return }
+            guard let s = ScanState.state(info) else { return }
+            guard let v = ScanState.numbers(scanner, 6) else { s.result.undecidable += 1; return }
             for i in Swift.stride(from: 0, to: 6, by: 2) { s.addPoint(v[i], v[i + 1]) }
         }
         for op in ["v", "y"] {
             CGPDFOperatorTableSetCallback(table, op) { scanner, info in
-                guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 4) else { return }
+                guard let s = ScanState.state(info) else { return }
+            guard let v = ScanState.numbers(scanner, 4) else { s.result.undecidable += 1; return }
                 for i in Swift.stride(from: 0, to: 4, by: 2) { s.addPoint(v[i], v[i + 1]) }
             }
         }
         CGPDFOperatorTableSetCallback(table, "re") { scanner, info in
-            guard let s = ScanState.state(info), let v = ScanState.numbers(scanner, 4) else { return }
+            guard let s = ScanState.state(info) else { return }
+            guard let v = ScanState.numbers(scanner, 4) else { s.result.undecidable += 1; return }
             for (dx, dy) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
                 s.addPoint(v[0] + dx * v[2], v[1] + dy * v[3])
             }

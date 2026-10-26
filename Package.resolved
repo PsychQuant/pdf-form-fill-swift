@@ -5,8 +5,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/PsychQuant/pdf-visual-diff-swift.git",
       "state" : {
-        "revision" : "8db445e6960dbbbb2e192d51d4bd011088a05dc6",
-        "version" : "0.6.0"
+        "revision" : "1593dd0151a8fdff2994dfbabbb399ecac3a1a40",
+        "version" : "0.6.1"
       }
     }
   ],
