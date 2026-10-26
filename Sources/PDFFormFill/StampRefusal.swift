@@ -7,8 +7,12 @@ public enum StampRefusal: Error, Equatable, Sendable, CustomStringConvertible {
     case unreadable(ObjectKind)
     /// A stream whose data lives in another file (/F).
     case externalStream
+    /// A stream without a stream dictionary.
+    case streamWithoutDictionary
     /// A stream whose data cannot be decoded.
     case undecodableStream
+    /// A stream whose decoded data is in a format the writer does not know.
+    case unknownStreamFormat
     /// Objects nested deeper than `limit`.
     case nestedTooDeep(limit: Int)
     /// An infinite number or one that is not a number.
@@ -29,6 +33,7 @@ public enum StampRefusal: Error, Equatable, Sendable, CustomStringConvertible {
 
     public enum ObjectKind: String, Sendable {
         case name, string, number, array, dictionary, stream, unknown
+        case arrayEntry = "array entry"
     }
 
     public var description: String {
@@ -36,7 +41,9 @@ public enum StampRefusal: Error, Equatable, Sendable, CustomStringConvertible {
         case .unreadable(.unknown): return "unknown object type"
         case .unreadable(let kind): return "unreadable \(kind.rawValue)"
         case .externalStream: return "external stream"
+        case .streamWithoutDictionary: return "stream without dictionary"
         case .undecodableStream: return "undecodable stream"
+        case .unknownStreamFormat: return "unknown stream format"
         case .nestedTooDeep(let limit): return "objects nested deeper than \(limit)"
         case .nonFiniteNumber: return "non-finite number"
         case .tooLarge(let limit): return "the copy would exceed \(limit) bytes"

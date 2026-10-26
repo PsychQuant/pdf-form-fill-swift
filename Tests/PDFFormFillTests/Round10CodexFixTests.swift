@@ -58,17 +58,24 @@ struct Round10CodexFixTests {
     func refusalDescription() {
         #expect(FormFillError.unstampable(.overlayHasLayers).description.contains("optional content"))
         #expect(StampRefusal.nestedTooDeep(limit: 64).description.contains("64"))
+        // The texts the writer gave before the reasons became cases.
+        #expect(StampRefusal.unreadable(.arrayEntry).description == "unreadable array entry")
+        #expect(StampRefusal.streamWithoutDictionary.description == "stream without dictionary")
+        #expect(StampRefusal.unknownStreamFormat.description == "unknown stream format")
+        #expect(StampRefusal.unreadable(.unknown).description == "unknown object type")
     }
 
-    /// At 127 and 254 dpi an exact A4 page is 1485 and 2970 rows, but the
-    /// 841.89 bp page TeX writes is one row taller, so the shared canvas has
-    /// to cover the compiled overlay too (144 dpi is the control). No pixel
-    /// difference from the shorter canvas has been observed on this content;
-    /// the test guards the fill at the resolutions where the heights differ.
+    /// The blank form is 841 bp tall, a near-A4 page, so at 127 and 254 dpi
+    /// the original and the exact-A4 output fit in 1485 and 2970 rows, while
+    /// the 841.89 bp overlay TeX writes needs one more: the shared canvas
+    /// grows and the original is drawn again (144 dpi is the control, where
+    /// the heights agree). No pixel difference from the shorter canvas has
+    /// been observed on this content, so the test runs the branch and checks
+    /// the fill still passes; it does not fail without the change.
     @Test("compared renders share a height that covers the compiled overlay",
           .enabled(if: xelatexAvailable, "xelatex not found"), arguments: [127.0, 144.0, 254.0])
     func canvasCoversOverlay(dpi: Double) throws {
-        let blank = try SyntheticPDF.make(size: SyntheticPDF.a4, [])
+        let blank = try SyntheticPDF.make(size: CGSize(width: SyntheticPDF.a4.width, height: 841), [])
         let lines = (0..<60).map { i in
             "\\draw[line width=0.5bp] ($(current page.north west)+(40.2bp,-\(60.37 + Double(i) * 12.13 + 3.07)bp)$) -- ++(515.5bp,0);"
         }.joined(separator: "\n")

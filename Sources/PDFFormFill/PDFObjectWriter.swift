@@ -134,7 +134,7 @@ struct PDFObjectWriter {
         var out = Data("[".utf8)
         for i in 0..<CGPDFArrayGetCount(array) {
             var object: CGPDFObjectRef?
-            guard CGPDFArrayGetObject(array, i, &object), let object else { throw StampRefusal.unreadable(.array) }
+            guard CGPDFArrayGetObject(array, i, &object), let object else { throw StampRefusal.unreadable(.arrayEntry) }
             if i > 0 { out.append(Data(" ".utf8)) }
             out.append(try value(object))
             try checkBudget(adding: out.count)
@@ -179,7 +179,7 @@ struct PDFObjectWriter {
     /// again, or JPEG and JPEG 2000 data kept with their filter.
     mutating func stream(_ stream: CGPDFStreamRef) throws -> Int {
         if let number = streams[stream] { return number }
-        guard let dictionary = CGPDFStreamGetDictionary(stream) else { throw StampRefusal.unreadable(.stream) }
+        guard let dictionary = CGPDFStreamGetDictionary(stream) else { throw StampRefusal.streamWithoutDictionary }
         var external: CGPDFObjectRef?
         guard !CGPDFDictionaryGetObject(dictionary, "F", &external) else { throw StampRefusal.externalStream }
         let number = reserve()
@@ -204,7 +204,7 @@ struct PDFObjectWriter {
             data = decoded
             entries.append(("Filter", Data("/JPXDecode".utf8)))
         @unknown default:
-            throw StampRefusal.undecodableStream
+            throw StampRefusal.unknownStreamFormat
         }
         try set(number, Self.streamBody(entries: entries, data: data))
         return number
