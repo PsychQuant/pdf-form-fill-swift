@@ -4,7 +4,7 @@ Fill a blank PDF form without touching it, and prove it.
 
 Only the typed text is typeset — in TeX, on a page of the output's size, with
 positions in bp measured from the page's top-left corner. The compiled overlay is stamped 1:1
-onto a copy of the original page with CoreGraphics (no scaling of either), and
+onto the original page at the PDF object level (no scaling, nothing redrawn), and
 the result is compared pixel by pixel against the original with
 [pdf-visual-diff-swift](https://github.com/PsychQuant/pdf-visual-diff-swift).
 Part of the macdoc toolchain ([PsychQuant/macdoc#240](https://github.com/PsychQuant/macdoc/issues/240)).
@@ -53,25 +53,31 @@ text changed, nothing of the original got lighter, typed text does not touch
 printed ink, nothing printed was cropped, and all typed text reached the
 output. Before stamping, originals that cannot be carried over faithfully are
 refused: more than one page, a rotated page, or annotations (links, form
-fields, comments), whose appearances a redraw drops and a render of the
+fields, comments), whose appearances stamping does not copy and a render of the
 original does not show. After compiling, an overlay that draws outside its page
 is refused, because no render shows that part. Two checks share the work:
 ink up to one page beyond each edge is found pixel by pixel, and drawing
 farther out is found by reading the overlay's content stream. The stream
 check places every glyph by following the font's widths and the text state
 (`Tc`, `Tw`, `Tz`, `Ts`, `TJ` displacements, fonts set by `Tf` or by an
-ExtGState through `gs`, `q`/`Q`, form XObjects), and reports an em box around
-a glyph, a point of a painted path, an image corner or a shading that lies
-more than 0.9 of a page beyond the page, unless a clip keeps it within that
-reach. It is conservative: curve control points count,
-and a clip is taken as its bounding box. An overlay whose drawing cannot be
-placed is refused as unverifiable: text in a font without width data (only
-`/Widths` fonts and Identity-H/V CID fonts are read), a form XObject that
+ExtGState through `gs`, `q`/`Q`, form XObjects), and reports a box around a
+glyph (the font's `/FontBBox`, or a box from one em before the pen to two after
+it when the font gives none), a point of a painted path, an image corner or the
+bounding box of a shading that lies more than 0.9 of a page beyond the page,
+unless a clip keeps it within that reach. It is conservative: curve control
+points count, and a clip is taken as its bounding box. An overlay whose drawing
+cannot be placed, outside a clip within that reach, is refused as
+unverifiable: text in a font without width data (only `/Widths` fonts and
+Identity-H/V CID fonts are read; Type3 glyphs may draw anywhere and are never
+placed), a shading without a bounding box, a form XObject that
 cannot be read to the end (a cycle, nesting deeper than 16, more than 2000
 distinct forms or 100000 form invocations), a resource name that does not
 resolve, an operator whose operands cannot be read, or a content stream that
 fails to parse. An overlay with
 annotations (links, form fields) is refused too, since stamping drops them.
+
+A character the overlay's fonts lack is refused too: the engine leaves it out
+of the PDF with only a line in its log, where no pixel check can see it.
 
 ## Page size
 
@@ -85,8 +91,14 @@ The overlay page must have the output's size: A4 in page mode `.a4`, the
 original's size in page mode `.original`. `FormSkeleton.generate` writes
 `a4paper` for a near-A4 form and the form's own size otherwise.
 
-The page content is redrawn as vector content with a translation only; it is
-never rasterized or scaled.
+Nothing is redrawn. The output page holds the original page's content streams
+and resources byte for byte (decoded and deflated again; JPEG and JPEG 2000
+data kept as it is), clipped to the original's crop box, followed by the
+overlay as a form XObject. In page mode `.a4` only the page box changes,
+keeping the original's top-left corner, so the original renders with exactly
+the transform it had. A redraw through a CoreGraphics PDF context would
+rewrite every coordinate, rounded, and change how fine lines and curves
+render, which the threshold-free checks would rightly report.
 
 ## Requirements
 

@@ -7,13 +7,13 @@ import Foundation
 ///
 /// The work is split with the pixel check (`PageGeometry.inkOutsideCropBox`),
 /// which sees ink up to one page beyond each edge. This scan marks the
-/// points of painted paths, the corners of images and an em box around every
-/// glyph it can place, and reports those more than 0.9 of a page beyond the
-/// crop box. Ink lies within the marks (the convex hull of a path's points,
-/// an image's corners, a glyph's em box), so whatever the scan does not
-/// report lies where the pixel check sees it, and no band is left between
-/// the two. Drawing whose clip lies within that reach cannot be visible
-/// beyond it and is not reported.
+/// points of painted paths, the corners of images and shadings, and a box
+/// around every glyph it can place (the font's /FontBBox, or an em-based box
+/// when the font gives none), and reports those more than 0.9 of a page
+/// beyond the crop box. For paths, images and fonts whose /FontBBox is true
+/// to their glyphs, ink lies within the marks, so whatever the scan does not
+/// report lies where the pixel check sees it. Drawing whose clip lies within
+/// that reach cannot be visible beyond it and is not reported.
 enum ContentExtent {
 
     struct Result: Equatable {
@@ -61,6 +61,10 @@ final class FontMetrics {
     private var widths: [Int: CGFloat] = [:]
     private var ranges: [(ClosedRange<Int>, CGFloat)] = []
     private let missing: CGFloat
+    /// The font's bounding box (/FontBBox), which holds the ink of every
+    /// glyph, in text space per unit of font size; nil when the font gives
+    /// none or a degenerate one.
+    var bbox: CGRect?
 
     private init(twoByte: Bool, vertical: Bool, missing: CGFloat) {
         self.twoByte = twoByte
@@ -98,6 +102,7 @@ final class FontMetrics {
                 let metrics = FontMetrics(twoByte: true, vertical: true, missing: w1 / 1000)
                 var w2: CGPDFArrayRef?
                 if CGPDFDictionaryGetArray(descendant, "W2", &w2), let w2 { metrics.readCIDArray(w2, stride: 3) }
+                metrics.bbox = descriptorBBox(descendant, sx: 0.001, sy: 0.001)
                 return metrics
             }
             var dw: CGPDFReal = 1000
@@ -105,19 +110,15 @@ final class FontMetrics {
             let metrics = FontMetrics(twoByte: true, vertical: false, missing: dw / 1000)
             var w: CGPDFArrayRef?
             if CGPDFDictionaryGetArray(descendant, "W", &w), let w { metrics.readCIDArray(w, stride: 1) }
+            metrics.bbox = descriptorBBox(descendant, sx: 0.001, sy: 0.001)
             return metrics
         }
-        guard ["Type1", "MMType1", "TrueType", "Type3"].contains(subtype) else { return nil }
+        // A Type3 glyph is a content stream that may draw anywhere, whatever
+        // its /FontBBox says, so its characters cannot be placed.
+        guard ["Type1", "MMType1", "TrueType"].contains(subtype) else { return nil }
         var widthArray: CGPDFArrayRef?
         guard CGPDFDictionaryGetArray(font, "Widths", &widthArray), let widthArray else { return nil }
-        var scale: CGFloat = 0.001
-        if subtype == "Type3" {
-            var matrix: CGPDFArrayRef?
-            var a: CGPDFReal = 0
-            guard CGPDFDictionaryGetArray(font, "FontMatrix", &matrix), let matrix,
-                  CGPDFArrayGetNumber(matrix, 0, &a) else { return nil }
-            scale = a
-        }
+        let scale: CGFloat = 0.001
         var first: CGPDFInteger = 0
         CGPDFDictionaryGetInteger(font, "FirstChar", &first)
         var missingWidth: CGPDFReal = 0
@@ -128,9 +129,37 @@ final class FontMetrics {
         let metrics = FontMetrics(twoByte: false, vertical: false, missing: missingWidth * scale)
         for i in 0..<CGPDFArrayGetCount(widthArray) {
             var width: CGPDFReal = 0
+            // Simple fonts have one-byte codes; entries past 255 never apply.
+            guard first >= 0, first <= 255 - i else { break }
             if CGPDFArrayGetNumber(widthArray, i, &width) { metrics.widths[first + i] = width * scale }
         }
+        metrics.bbox = descriptorBBox(font, sx: scale, sy: scale)
         return metrics
+    }
+
+    private static func descriptorBBox(_ font: CGPDFDictionaryRef, sx: CGFloat, sy: CGFloat) -> CGRect? {
+        var descriptor: CGPDFDictionaryRef?
+        guard CGPDFDictionaryGetDictionary(font, "FontDescriptor", &descriptor), let descriptor else { return nil }
+        return rect(descriptor, "FontBBox", sx: sx, sy: sy)
+    }
+
+    /// A four-number rectangle scaled to text space; nil unless every number
+    /// reads, is finite, and the rectangle has area.
+    private static func rect(_ dictionary: CGPDFDictionaryRef, _ key: String, sx: CGFloat, sy: CGFloat) -> CGRect? {
+        var array: CGPDFArrayRef?
+        guard CGPDFDictionaryGetArray(dictionary, key, &array), let array, CGPDFArrayGetCount(array) == 4 else { return nil }
+        var v = [CGFloat](repeating: 0, count: 4)
+        for i in 0..<4 {
+            var value: CGPDFReal = 0
+            guard CGPDFArrayGetNumber(array, i, &value) else { return nil }
+            v[i] = value
+        }
+        let x = [v[0] * sx, v[2] * sx], y = [v[1] * sy, v[3] * sy]
+        let box = CGRect(x: x.min()!, y: y.min()!, width: abs(x[1] - x[0]), height: abs(y[1] - y[0]))
+        guard [box.minX, box.minY, box.maxX, box.maxY].allSatisfy(\.isFinite), box.width > 0, box.height > 0 else {
+            return nil
+        }
+        return box
     }
 
     /// /W (stride 1: one width per CID) or /W2 (stride 3: w1y, vx, vy per
@@ -144,7 +173,9 @@ final class FontMetrics {
             var list: CGPDFArrayRef?
             if CGPDFArrayGetArray(array, i + 1, &list), let list {
                 let n = CGPDFArrayGetCount(list) / stride
+                // CIDs are two bytes; entries past 0xFFFF never apply.
                 for k in 0..<n {
+                    guard first >= 0, first <= 0xFFFF - k else { break }
                     var value: CGPDFReal = 0
                     if CGPDFArrayGetNumber(list, k * stride, &value) { widths[first + k] = value / 1000 }
                 }
@@ -239,14 +270,19 @@ final class ScanState {
         textMatrix = lineMatrix
     }
 
-    /// Marks an em box around the glyph at the pen (from one em before it
-    /// to two after, one em below and above the baseline raised by Ts).
-    func markGlyph() {
+    /// Marks a box around the glyph at the pen, raised by Ts.
+    func markGlyph(_ font: FontMetrics) {
         guard g.renderMode != 3, g.renderMode != 7 else { return }
         let size = g.fontSize
         let rendering = CGAffineTransform(a: size * g.horizontalScale, b: 0, c: 0, d: size, tx: 0, ty: g.rise)
             .concatenating(textMatrix).concatenating(g.ctm)
-        for (x, y) in [(-1.0, -1.0), (2.0, -1.0), (-1.0, 1.0), (2.0, 1.0)] {
+        // The font's own bounding box when it gives one (horizontal writing);
+        // otherwise a box from one em before the pen to two after it.
+        let box = font.vertical ? nil : font.bbox
+        let corners: [(CGFloat, CGFloat)] = box.map {
+            [($0.minX, $0.minY), ($0.maxX, $0.minY), ($0.minX, $0.maxY), ($0.maxX, $0.maxY)]
+        } ?? [(-1, -1), (2, -1), (-1, 1), (2, 1)]
+        for (x, y) in corners {
             markDevice(CGPoint(x: x, y: y).applying(rendering))
         }
     }
@@ -255,7 +291,8 @@ final class ScanState {
     /// glyph's width with Tc, Tw and Tz (or vertically for Identity-V).
     func show(_ bytes: UnsafeBufferPointer<UInt8>) {
         guard let font = g.font else {
-            if !bytes.isEmpty { result.undecidable += 1 }
+            // Text that cannot be placed is harmless under a clip within reach.
+            if !bytes.isEmpty && !clippedWithinReach { result.undecidable += 1 }
             return
         }
         var i = 0
@@ -268,7 +305,7 @@ final class ScanState {
                 code = Int(bytes[i])
                 i += 1
             }
-            markGlyph()
+            markGlyph(font)
             let spacing = g.charSpacing + (!font.twoByte && code == 32 ? g.wordSpacing : 0)
             let width = font.advance(of: code) * g.fontSize
             let move = font.vertical
@@ -296,8 +333,9 @@ final class ScanState {
     func endPath(paint: Bool) {
         if paint { pending.forEach(markDevice) }
         if clipPending {
-            if pending.contains(where: { !$0.x.isFinite || !$0.y.isFinite }) {
-                // A clip that cannot be bounded leaves the clip as it was.
+            if pending.isEmpty || pending.contains(where: { !$0.x.isFinite || !$0.y.isFinite }) {
+                // A clip with no path is ignored by renderers, and one that
+                // cannot be bounded leaves the clip as it was.
             } else if let first = pending.first {
                 var low = first, high = first
                 for p in pending {
@@ -305,8 +343,6 @@ final class ScanState {
                     high = CGPoint(x: max(high.x, p.x), y: max(high.y, p.y))
                 }
                 g.clip = g.clip.intersection(CGRect(x: low.x, y: low.y, width: high.x - low.x, height: high.y - low.y))
-            } else {
-                g.clip = .null
             }
             clipPending = false
         }
@@ -363,6 +399,18 @@ final class ScanState {
         return values.reversed()
     }
 
+    /// Exactly `count` numbers from an array, or nil.
+    static func numbers(in array: CGPDFArrayRef, count: Int) -> [CGFloat]? {
+        guard CGPDFArrayGetCount(array) == count else { return nil }
+        var values: [CGFloat] = []
+        for i in 0..<count {
+            var value: CGPDFReal = 0
+            guard CGPDFArrayGetNumber(array, i, &value) else { return nil }
+            values.append(value)
+        }
+        return values
+    }
+
     static func matrix(_ v: [CGFloat]) -> CGAffineTransform {
         CGAffineTransform(a: v[0], b: v[1], c: v[2], d: v[3], tx: v[4], ty: v[5])
     }
@@ -415,6 +463,7 @@ final class ScanState {
                CGPDFObjectGetValue(object, .dictionary, &dictionary), let dictionary {
                 s.g.font = s.font(dictionary)
             } else {
+                // Text shown in an unresolved font counts when it is shown.
                 s.g.font = nil
             }
         }
@@ -528,6 +577,8 @@ final class ScanState {
                     s.displace(number)
                 } else if CGPDFArrayGetString(array, i, &string), let string {
                     s.show(ScanState.bytes(of: string))
+                } else {
+                    s.result.undecidable += 1
                 }
             }
         }
@@ -575,9 +626,40 @@ final class ScanState {
             ScanState.state(info)?.endPath(paint: false)
         }
         // A shading fills the whole clip.
-        CGPDFOperatorTableSetCallback(table, "sh") { _, info in
-            guard let s = ScanState.state(info), !s.clippedWithinReach else { return }
-            s.result.outside += 1
+        // A shading fills the clip, limited by its own /BBox when it has one.
+        CGPDFOperatorTableSetCallback(table, "sh") { scanner, info in
+            guard let s = ScanState.state(info) else { return }
+            var name: UnsafePointer<CChar>?
+            var shading: CGPDFDictionaryRef?
+            var shadingStream: CGPDFStreamRef?
+            guard CGPDFScannerPopName(scanner, &name), let name,
+                  let object = CGPDFContentStreamGetResource(CGPDFScannerGetContentStream(scanner), "Shading", name) else {
+                s.result.undecidable += 1
+                return
+            }
+            if CGPDFObjectGetValue(object, .dictionary, &shading) {
+            } else if CGPDFObjectGetValue(object, .stream, &shadingStream), let shadingStream {
+                shading = CGPDFStreamGetDictionary(shadingStream)
+            }
+            guard let shading else {
+                s.result.undecidable += 1
+                return
+            }
+            if s.clippedWithinReach { return }
+            var bbox: CGPDFArrayRef?
+            var v = [CGFloat](repeating: 0, count: 4)
+            guard CGPDFDictionaryGetArray(shading, "BBox", &bbox), let bbox, CGPDFArrayGetCount(bbox) == 4,
+                  (0..<4).allSatisfy({ i in
+                      var value: CGPDFReal = 0
+                      guard CGPDFArrayGetNumber(bbox, i, &value) else { return false }
+                      v[i] = value
+                      return true
+                  }) else {
+                // Unbounded by its clip or itself: where it paints is unknown.
+                s.result.undecidable += 1
+                return
+            }
+            for (x, y) in [(v[0], v[1]), (v[2], v[1]), (v[0], v[3]), (v[2], v[3])] { s.mark(CGPoint(x: x, y: y)) }
         }
         // An inline image fills the unit square of the current matrix.
         CGPDFOperatorTableSetCallback(table, "EI") { _, info in
@@ -605,12 +687,10 @@ final class ScanState {
             }
             var form = CGAffineTransform.identity
             var array: CGPDFArrayRef?
-            if CGPDFDictionaryGetArray(dictionary, "Matrix", &array), let array, CGPDFArrayGetCount(array) == 6 {
-                var v = [CGFloat](repeating: 0, count: 6)
-                for i in 0..<6 {
-                    var value: CGPDFReal = 0
-                    CGPDFArrayGetNumber(array, i, &value)
-                    v[i] = value
+            if CGPDFDictionaryGetArray(dictionary, "Matrix", &array), let array {
+                guard let v = ScanState.numbers(in: array, count: 6) else {
+                    s.result.undecidable += 1
+                    return
                 }
                 form = ScanState.matrix(v)
             }
@@ -618,12 +698,11 @@ final class ScanState {
             s.g.ctm = form.concatenating(s.g.ctm)
             // The form's /BBox clips its content.
             var bbox: CGPDFArrayRef?
-            if CGPDFDictionaryGetArray(dictionary, "BBox", &bbox), let bbox, CGPDFArrayGetCount(bbox) == 4 {
-                var v = [CGFloat](repeating: 0, count: 4)
-                for i in 0..<4 {
-                    var value: CGPDFReal = 0
-                    CGPDFArrayGetNumber(bbox, i, &value)
-                    v[i] = value
+            if CGPDFDictionaryGetArray(dictionary, "BBox", &bbox), let bbox {
+                guard let v = ScanState.numbers(in: bbox, count: 4) else {
+                    s.g = outer
+                    s.result.undecidable += 1
+                    return
                 }
                 let rect = CGRect(x: min(v[0], v[2]), y: min(v[1], v[3]), width: abs(v[2] - v[0]), height: abs(v[3] - v[1]))
                 s.g.clip = s.g.clip.intersection(rect.applying(s.g.ctm))

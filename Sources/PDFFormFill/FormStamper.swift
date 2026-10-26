@@ -16,11 +16,13 @@ public enum FormStamper {
     /// Resolution used to look for ink in the strip removed by A4 normalization.
     static let stripCheckDPI = 288.0
 
-    /// Writes a new single-page PDF to `output`: the original page drawn 1:1
-    /// with its top-left corner at the new page's top-left corner, then the
-    /// overlay page drawn 1:1 the same way, each clipped to its own page box.
-    /// Neither is scaled; the page content is redrawn as vector content, not
-    /// rasterized. The overlay must have the output's page size. The original
+    /// Writes a new single-page PDF to `output`: the original page's content
+    /// streams and resources copied byte for byte, then the overlay page as
+    /// a form XObject whose top-left corner lands on the page's. Nothing is
+    /// redrawn, scaled or rasterized: in page mode `a4` only the page box
+    /// changes, keeping the original's top-left corner, so the original
+    /// renders with exactly the transform it had. The overlay must have the
+    /// output's page size. The original
     /// file is only read; `output` may not be the original or the overlay,
     /// and when it exists it must be a regular file, never a directory or a
     /// symbolic link. On error nothing is written to `output`.
@@ -34,7 +36,7 @@ public enum FormStamper {
         let overlayPage = try singlePage(overlay, isOriginal: false)
         let overlayRotation = ((Int(overlayPage.rotationAngle) % 360) + 360) % 360
         guard overlayRotation == 0 else { throw FormFillError.rotatedOverlay(degrees: overlayRotation) }
-        // A redraw drops annotations, and no render shows that loss.
+        // Stamping copies only page content, so annotations would be lost unseen.
         let overlayAnnotations = annotationCount(overlayPage)
         guard overlayAnnotations == 0 else { throw FormFillError.annotatedOverlay(count: overlayAnnotations) }
         let overlayBox = overlayPage.getBoxRect(.cropBox)
@@ -48,22 +50,23 @@ public enum FormStamper {
         // fits the file system, with 128 random bits.
         let temporary = output.deletingLastPathComponent()
             .appendingPathComponent(".pff-\(UUID().uuidString.replacingOccurrences(of: "-", with: "")).tmp")
-        var mediaBox = CGRect(origin: .zero, size: target)
-        guard let context = CGContext(temporary as CFURL, mediaBox: &mediaBox, nil) else {
+        // The page keeps the original's top-left corner, so the original's
+        // content renders with exactly the transform it had on its own.
+        let pageBox = pageMode == .a4
+            ? CGRect(x: box.minX, y: box.maxY - target.height, width: target.width, height: target.height)
+            : box
+        let data: Data
+        do {
+            data = try compose(original: page, overlay: overlayPage, overlayBox: overlayBox, pageBox: pageBox)
+        } catch let error as PDFObjectWriter.Unsupported {
+            throw FormFillError.unstampable(error.reason)
+        }
+        do {
+            try data.write(to: temporary, options: .withoutOverwriting)
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
             throw FormFillError.outputWriteFailed(output.path)
         }
-        context.beginPDFPage(nil)
-        for (source, sourceBox) in [(page, box), (overlayPage, overlayBox)] {
-            context.saveGState()
-            // Map the source's top-left corner onto the target's top-left corner.
-            context.translateBy(x: -sourceBox.minX, y: target.height - sourceBox.maxY)
-            // drawPDFPage does not clip to the page's box; a viewer would.
-            context.clip(to: sourceBox)
-            context.drawPDFPage(source)
-            context.restoreGState()
-        }
-        context.endPDFPage()
-        context.closePDF()
 
         do {
             // Checked again: the output may have appeared since the first check.
@@ -79,6 +82,104 @@ public enum FormStamper {
         }
         try moveIntoPlace(temporary, to: output)
     }
+    /// The output PDF: one page whose contents are the original's streams,
+    /// unchanged and kept apart by q/Q, followed by the overlay drawn as a
+    /// form XObject under a name the original does not use.
+    static func compose(original page: CGPDFPage, overlay: CGPDFPage, overlayBox: CGRect,
+                        pageBox: CGRect) throws -> Data {
+        typealias W = PDFObjectWriter
+        var writer = PDFObjectWriter()
+        let catalog = writer.reserve(), pages = writer.reserve(), pageNumber = writer.reserve()
+
+        var overlayContent = Data()
+        for stream in try contentStreams(of: overlay) {
+            var format = CGPDFDataFormat.raw
+            guard let data = CGPDFStreamCopyData(stream, &format), format == .raw else {
+                throw W.Unsupported(reason: "undecodable overlay content")
+            }
+            overlayContent.append(data as Data)
+            overlayContent.append(Data("\n".utf8))
+        }
+        let tx = try W.number(pageBox.minX - overlayBox.minX), ty = try W.number(pageBox.maxY - overlayBox.maxY)
+        var formEntries: [(String, Data)] = [
+            ("Type", Data("/XObject".utf8)), ("Subtype", Data("/Form".utf8)),
+            ("BBox", try rectangle(overlayBox)), ("Matrix", Data("[1 0 0 1 \(tx) \(ty)]".utf8)),
+            ("Filter", Data("/FlateDecode".utf8)),
+        ]
+        if let resources = ContentExtent.inheritedResources(of: overlay) {
+            formEntries.append(("Resources", W.reference(try writer.dictionary(resources))))
+        }
+        if let group = try groupEntry(of: overlay, writer: &writer) { formEntries.append(("Group", group)) }
+        let form = writer.stream(entries: formEntries, data: try W.deflate(overlayContent))
+
+        var resources: [(String, Data)] = []
+        var xobjects: [(String, Data)] = []
+        if let original = ContentExtent.inheritedResources(of: page) {
+            resources = try writer.entries(of: original, skipping: ["XObject"])
+            var existing: CGPDFDictionaryRef?
+            if CGPDFDictionaryGetDictionary(original, "XObject", &existing), let existing {
+                xobjects = try writer.entries(of: existing)
+            }
+        }
+        var name = "PFFOverlay"
+        var suffix = 0
+        while xobjects.contains(where: { $0.0 == name }) {
+            suffix += 1
+            name = "PFFOverlay\(suffix)"
+        }
+        xobjects.append((name, W.reference(form)))
+        resources.append(("XObject", W.dictionaryBody(xobjects)))
+
+        // The original is clipped to its own crop box, as a render of it is.
+        let crop = page.getBoxRect(.cropBox)
+        let clip = try [crop.minX, crop.minY, crop.width, crop.height].map(W.number).joined(separator: " ")
+        var contents = [writer.stream(entries: [], data: Data("q \(clip) re W n\n".utf8))]
+        for stream in try contentStreams(of: page) { contents.append(try writer.stream(stream)) }
+        contents.append(writer.stream(entries: [], data: Data("\nQ\nq \(W.name(name)) Do Q\n".utf8)))
+
+        var pageEntries: [(String, Data)] = [
+            ("Type", Data("/Page".utf8)), ("Parent", W.reference(pages)),
+            ("MediaBox", try rectangle(pageBox)), ("CropBox", try rectangle(pageBox)),
+            ("Resources", W.dictionaryBody(resources)),
+            ("Contents", Data(("[" + contents.map { "\($0) 0 R" }.joined(separator: " ") + "]").utf8)),
+        ]
+        if let group = try groupEntry(of: page, writer: &writer) { pageEntries.append(("Group", group)) }
+        writer.set(pageNumber, W.dictionaryBody(pageEntries))
+        writer.set(pages, Data("<< /Type /Pages /Kids [\(pageNumber) 0 R] /Count 1 >>".utf8))
+        writer.set(catalog, Data("<< /Type /Catalog /Pages \(pages) 0 R >>".utf8))
+        return try writer.data(root: catalog)
+    }
+
+    /// The page's /Contents: one stream or an array of streams.
+    static func contentStreams(of page: CGPDFPage) throws -> [CGPDFStreamRef] {
+        guard let dictionary = page.dictionary else { return [] }
+        var stream: CGPDFStreamRef?
+        var array: CGPDFArrayRef?
+        if CGPDFDictionaryGetStream(dictionary, "Contents", &stream), let stream { return [stream] }
+        guard CGPDFDictionaryGetArray(dictionary, "Contents", &array), let array else { return [] }
+        return try (0..<CGPDFArrayGetCount(array)).map { index in
+            var entry: CGPDFStreamRef?
+            guard CGPDFArrayGetStream(array, index, &entry), let entry else {
+                throw PDFObjectWriter.Unsupported(reason: "a page content entry is not a stream")
+            }
+            return entry
+        }
+    }
+
+    /// The page's transparency /Group, which changes how its content blends.
+    static func groupEntry(of page: CGPDFPage, writer: inout PDFObjectWriter) throws -> Data? {
+        var group: CGPDFObjectRef?
+        guard let dictionary = page.dictionary, CGPDFDictionaryGetObject(dictionary, "Group", &group), let group else {
+            return nil
+        }
+        return try writer.value(group)
+    }
+
+    static func rectangle(_ rect: CGRect) throws -> Data {
+        let values = try [rect.minX, rect.minY, rect.maxX, rect.maxY].map(PDFObjectWriter.number)
+        return Data(("[" + values.joined(separator: " ") + "]").utf8)
+    }
+
     /// rename(2): one atomic step that replaces a regular file (or a link
     /// entry, without following it) and fails on a directory, deleting
     /// nothing. On failure the temporary file is removed.
@@ -119,8 +220,8 @@ public enum FormStamper {
     }
 
     /// Entries of the page's /Annots array: links, form-field widgets,
-    /// comments. Their appearances are not part of the page content, so a
-    /// redraw drops them and a render of the original does not show them.
+    /// comments. Their appearances are not part of the page content, so
+    /// stamping does not copy them and a render of the original does not show them.
     static func annotationCount(_ page: CGPDFPage) -> Int {
         guard let dictionary = page.dictionary else { return 0 }
         var annotations: CGPDFArrayRef?

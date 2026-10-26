@@ -182,7 +182,7 @@ struct Round6FixTests {
     @Test("full-width punctuation and kerned Latin text near the left margin are filled", .enabled(if: xelatexAvailable, "xelatex not found"),
           arguments: ["\\at{40}{100}{12}{（一）「甲」、「乙」：丙，丁。「戊」、「己」。};",
                       "\\at{6}{140}{12}{AVAVAV TAVAWAY};",
-                      "\\at{2}{180}{10}{「臺北市」};"])
+                      "\\at{2}{180}{10}{「甲乙丙」};"])
     func legitimateTextNearMargin(typed: String) throws {
         let tex = try Self.cjkProject(typed: typed)
         let output = tex.deletingLastPathComponent().appendingPathComponent("out.pdf")

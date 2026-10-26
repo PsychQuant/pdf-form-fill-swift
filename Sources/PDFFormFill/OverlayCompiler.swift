@@ -139,6 +139,10 @@ public struct OverlayCompiler: Sendable {
                 throw FormFillError.compilationFailed(logTail: Self.tail(of: log))
             }
         }
+        // A character the font lacks is dropped from the PDF with only a log
+        // line, so no pixel check can see that it is missing.
+        let missing = Self.missingCharacters(in: log)
+        guard missing.isEmpty else { throw FormFillError.missingCharacters(missing) }
         let pdf = output.appendingPathComponent("overlay.pdf")
         guard let document = CGPDFDocument(pdf as CFURL) else {
             throw FormFillError.compilationFailed(logTail: Self.tail(of: log))
@@ -154,6 +158,23 @@ public struct OverlayCompiler: Sendable {
                                                  expectedHeight: Double(pageSize.height))
         }
         return pdf
+    }
+
+    /// The characters the engine reported as missing from their fonts
+    /// ("Missing character: There is no X (U+…) in font …"), in order, once each.
+    static func missingCharacters(in log: URL) -> [String] {
+        guard let data = try? Data(contentsOf: log) else { return [] }
+        let text = String(decoding: data, as: UTF8.self)
+        var found: [String] = []
+        for line in text.split(separator: "\n") {
+            guard let start = line.range(of: "Missing character: There is no ") else { continue }
+            let rest = line[start.upperBound...]
+            guard let end = rest.range(of: " in font") ?? rest.range(of: " (U+") else { continue }
+            var character = String(rest[..<end.lowerBound])
+            if let code = character.range(of: " (U+") { character = String(character[..<code.lowerBound]) }
+            if !character.isEmpty, !found.contains(character) { found.append(character) }
+        }
+        return found
     }
 
     /// Stops the engine and the processes it started (xdvipdfmx and the

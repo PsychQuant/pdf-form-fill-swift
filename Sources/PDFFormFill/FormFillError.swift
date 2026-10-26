@@ -24,6 +24,10 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
     /// Parts of the overlay whose position cannot be determined.
     case overlayUnverifiable(parts: Int)
     case annotatedOverlay(count: Int)
+    /// The PDF's objects could not be copied into the output.
+    case unstampable(String)
+    /// Characters the overlay's fonts lack; the engine left them out.
+    case missingCharacters([String])
     case blankFormMacroMissing(String)
     case blankFormNotFound(String)
     case unsafeBlankFormPath(String)
@@ -65,7 +69,7 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
             return "the original page is rotated by \(degrees)°; only unrotated pages are supported"
         case .annotatedOriginal(let count):
             return "the original carries \(count) annotation\(count == 1 ? "" : "s") (links, form fields or comments); "
-                + "stamping redraws only the page content, so they would be lost where the pixel check cannot see it; "
+                + "stamping copies only the page content, so they would be lost where the pixel check cannot see it; "
                 + "flatten the PDF first"
         case .rotatedOverlay(let degrees):
             return "the overlay page is rotated by \(degrees)°; only unrotated overlays are supported"
@@ -80,9 +84,14 @@ public enum FormFillError: Error, Equatable, CustomStringConvertible {
                 + "the page (text in a font without width data, a form XObject that cannot be read to the end, "
                 + "an unresolvable resource, unreadable operands, or a content stream that cannot be parsed); "
                 + "simplify the overlay"
+        case .missingCharacters(let characters):
+            return "the overlay's fonts lack \(characters.joined(separator: " ")), which the engine left out; "
+                + "set a font that has them (for example with \\setCJKmainfont or a fallback font)"
+        case .unstampable(let reason):
+            return "cannot copy the PDF's objects into the output (\(reason)); the form cannot be stamped as it is"
         case .annotatedOverlay(let count):
             return "the overlay carries \(count) annotation\(count == 1 ? "" : "s") (links or form fields); "
-                + "stamping redraws only the page content, so they would be lost; remove them from the .tex"
+                + "stamping copies only the page content, so they would be lost; remove them from the .tex"
         case .blankFormMacroMissing(let path):
             return "no \\newcommand{\\BlankForm}{…} (or \\def\\BlankForm{…}) in \(path)"
         case .blankFormNotFound(let path):
