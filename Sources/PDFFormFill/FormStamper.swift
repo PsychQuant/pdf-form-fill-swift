@@ -116,7 +116,7 @@ public enum FormStamper {
             formEntries.append(("Resources", W.reference(try writer.dictionary(resources))))
         }
         if let group = try groupEntry(of: overlay, writer: &writer) { formEntries.append(("Group", group)) }
-        let form = writer.stream(entries: formEntries, data: try W.deflate(overlayContent))
+        let form = try writer.stream(entries: formEntries, data: try W.deflate(overlayContent))
 
         var resources: [(String, Data)] = []
         var xobjects: [(String, Data)] = []
@@ -145,13 +145,13 @@ public enum FormStamper {
             let clip = try [crop.minX, crop.minY, crop.width, crop.height].map(W.number).joined(separator: " ")
             prefix = "q \(clip) re W n\n"
         }
-        var contents = [writer.stream(entries: [], data: Data(prefix.utf8))]
+        var contents = [try writer.stream(entries: [], data: Data(prefix.utf8))]
         for stream in try contentStreams(of: page) { contents.append(try writer.stream(stream)) }
         // Close every q the original left open, then the wrapper's own, so
         // the overlay is drawn in the page's untouched graphics state.
         let open = openSaveLevels(of: page)
         let restore = String(repeating: "Q\n", count: open + 1)
-        contents.append(writer.stream(entries: [], data: Data("\n\(restore)q \(W.name(name)) Do Q\n".utf8)))
+        contents.append(try writer.stream(entries: [], data: Data("\n\(restore)q \(W.name(name)) Do Q\n".utf8)))
 
         var pageEntries: [(String, Data)] = [
             ("Type", Data("/Page".utf8)), ("Parent", W.reference(pages)),
@@ -160,15 +160,15 @@ public enum FormStamper {
             ("Contents", Data(("[" + contents.map { "\($0) 0 R" }.joined(separator: " ") + "]").utf8)),
         ]
         if let group = try groupEntry(of: page, writer: &writer) { pageEntries.append(("Group", group)) }
-        writer.set(pageNumber, W.dictionaryBody(pageEntries))
-        writer.set(pages, Data("<< /Type /Pages /Kids [\(pageNumber) 0 R] /Count 1 >>".utf8))
+        try writer.set(pageNumber, W.dictionaryBody(pageEntries))
+        try writer.set(pages, Data("<< /Type /Pages /Kids [\(pageNumber) 0 R] /Count 1 >>".utf8))
         // Which optional-content layers are shown is set in the catalog;
         // without it, layers the original hides would be drawn.
         var catalogEntries: [(String, Data)] = [("Type", Data("/Catalog".utf8)), ("Pages", W.reference(pages))]
         if let properties = try optionalContent(of: originalCatalog, writer: &writer) {
             catalogEntries.append(("OCProperties", properties))
         }
-        writer.set(catalog, W.dictionaryBody(catalogEntries))
+        try writer.set(catalog, W.dictionaryBody(catalogEntries))
         return try writer.data(root: catalog)
     }
 

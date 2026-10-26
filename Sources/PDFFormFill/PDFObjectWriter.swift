@@ -20,6 +20,12 @@ struct PDFObjectWriter {
     private var arrays: [CGPDFArrayRef: (data: Data, number: Int?)] = [:]
     private var depth = 0
     private var written = 0
+    /// The byte budget for this copy (`maxBytes` unless a test lowers it).
+    let budget: Int
+
+    init(budget: Int = PDFObjectWriter.maxBytes) {
+        self.budget = budget
+    }
     static let maxDepth = 64
     /// Total bytes the copy may write: far beyond any form, and a stop for
     /// files built to expand.
@@ -33,21 +39,23 @@ struct PDFObjectWriter {
         return bodies.count
     }
 
-    mutating func set(_ number: Int, _ body: Data) {
+    /// Every body goes through here, so the budget bounds the whole copy.
+    mutating func set(_ number: Int, _ body: Data) throws {
+        try checkBudget(adding: body.count)
         bodies[number - 1] = body
         written += body.count
     }
 
     private func checkBudget(adding count: Int = 0) throws {
-        guard written + count <= Self.maxBytes else {
-            throw Unsupported(reason: "the copy would exceed \(Self.maxBytes >> 20) MB")
+        guard written + count <= budget else {
+            throw Unsupported(reason: "the copy would exceed \(budget) bytes")
         }
     }
 
     /// A new stream object with `entries` (already serialized) and `data`.
-    mutating func stream(entries: [(String, Data)], data: Data) -> Int {
+    mutating func stream(entries: [(String, Data)], data: Data) throws -> Int {
         let number = reserve()
-        set(number, Self.streamBody(entries: entries, data: data))
+        try set(number, Self.streamBody(entries: entries, data: data))
         return number
     }
 
@@ -102,8 +110,7 @@ struct PDFObjectWriter {
         if let cached = arrays[array] {
             if let number = cached.number { return Self.reference(number) }
             let number = reserve()
-            set(number, cached.data)
-            try checkBudget()
+            try set(number, cached.data)
             arrays[array] = (cached.data, number)
             return Self.reference(number)
         }
@@ -151,7 +158,7 @@ struct PDFObjectWriter {
         dictionaries[dictionary] = number
         try descend()
         defer { depth -= 1 }
-        set(number, Self.dictionaryBody(try entries(of: dictionary)))
+        try set(number, Self.dictionaryBody(try entries(of: dictionary)))
         return number
     }
 
@@ -169,6 +176,7 @@ struct PDFObjectWriter {
         var format = CGPDFDataFormat.raw
         guard let copied = CGPDFStreamCopyData(stream, &format) else { throw Unsupported(reason: "undecodable stream") }
         let decoded = copied as Data
+        try checkBudget(adding: decoded.count)
         var entries = try self.entries(of: dictionary, skipping: ["Length", "Filter", "DecodeParms", "DL"])
         let data: Data
         switch format {
@@ -185,8 +193,7 @@ struct PDFObjectWriter {
         @unknown default:
             throw Unsupported(reason: "unknown stream format")
         }
-        try checkBudget(adding: data.count)
-        set(number, Self.streamBody(entries: entries, data: data))
+        try set(number, Self.streamBody(entries: entries, data: data))
         return number
     }
 
